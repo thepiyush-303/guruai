@@ -9,6 +9,7 @@ import { transition, isTransitionError } from './stateMachine';
 import { dispatchSideEffects, emitStateChange, sendJson, feedLiveStt } from './sideEffects';
 import { getActiveSentenceBuffer, setActiveSentenceBuffer } from './sharedState';
 import { appendTurn } from './contextStore';
+import { runSummarizerBackground } from './summarizer';
 
 /**
  * Handle a text (JSON) message from the client.
@@ -309,6 +310,9 @@ export function handleInternalEvent(
       }
       // Transition to IDLE; side-effect SEND_TURN_COMPLETE sends metrics to browser
       runTransition(ws, ctx, 'llm_stream_complete');
+      
+      // Fire background summarizer (non-blocking)
+      runSummarizerBackground().catch(err => console.error(err));
       break;
     }
 

@@ -18,6 +18,7 @@
 interface PreparedStatement {
   run(...params: unknown[]): unknown;
   all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown;
 }
 interface SqliteDb {
   pragma(source: string): unknown;
@@ -29,10 +30,16 @@ type SqliteCtor = new (path: string) => SqliteDb;
 /** One persisted line of conversation. `role` is only ever user or assistant —
  *  system prompts and tool results are not part of the readable transcript. */
 export interface PersistedTurn {
+  id?: number;
   role: 'user' | 'assistant';
   content: string;
   session_id: string;
   ts: number;
+}
+
+export interface PersistedSummary {
+  text: string;
+  covers_up_to_turn: number;
 }
 
 // ── Singleton state ───────────────────────────────────────────
@@ -70,7 +77,17 @@ export function initContextStore(dbPath = process.env.VANI_DB_PATH ?? 'data/vani
         role       TEXT    NOT NULL,
         content    TEXT    NOT NULL,
         ts         INTEGER NOT NULL
-      )`,
+      );
+      CREATE TABLE IF NOT EXISTS summary (
+        id                 INTEGER PRIMARY KEY CHECK(id=1),
+        text               TEXT    NOT NULL,
+        updated_ts         INTEGER NOT NULL,
+        covers_up_to_turn  INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );`
     );
     enabled = true;
     console.log(`[context] transcript store ready at ${dbPath}`);
@@ -124,5 +141,69 @@ export function loadRecentTurns(limit = HISTORY_LOAD_LIMIT): PersistedTurn[] {
   } catch (err) {
     console.error('[context] failed to load turns:', err);
     return [];
+  }
+}
+
+/**
+ * Returns the current rolling summary if one exists.
+ */
+export function getSummary(): PersistedSummary | null {
+  if (!enabled || !db) return null;
+  try {
+    const row = db.prepare('SELECT text, covers_up_to_turn FROM summary WHERE id = 1').get() as PersistedSummary | undefined;
+    return row ?? null;
+  } catch (err) {
+    console.error('[context] failed to get summary:', err);
+    return null;
+  }
+}
+
+/**
+ * Upserts the rolling summary.
+ */
+export function updateSummary(text: string, coversUpToTurn: number): void {
+  if (!enabled || !db) return;
+  try {
+    db.prepare(`
+      INSERT INTO summary (id, text, updated_ts, covers_up_to_turn) 
+      VALUES (1, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET 
+        text = excluded.text, 
+        updated_ts = excluded.updated_ts, 
+        covers_up_to_turn = excluded.covers_up_to_turn
+    `).run(text, Date.now(), coversUpToTurn);
+  } catch (err) {
+    console.error('[context] failed to update summary:', err);
+  }
+}
+
+/**
+ * Gets turns that occur strictly after \`afterTurnId\`.
+ */
+export function getUnsummarizedTurns(afterTurnId: number, limit = 50): PersistedTurn[] {
+  if (!enabled || !db) return [];
+  try {
+    const rows = db
+      .prepare('SELECT id, session_id, role, content, ts FROM turns WHERE id > ? ORDER BY id ASC LIMIT ?')
+      .all(afterTurnId, limit) as PersistedTurn[];
+    return rows;
+  } catch (err) {
+    console.error('[context] failed to get unsummarized turns:', err);
+    return [];
+  }
+}
+
+/**
+ * Gets the maximum turn ID in the db, used to check if summarizer needs to run.
+ * Returns the highest autoincrement `id`, not a count — safe even if rows are deleted.
+ */
+export function getMaxTurnId(): number {
+  if (!enabled || !db) return 0;
+  try {
+    const row = db.prepare('SELECT COALESCE(MAX(id), 0) as maxId FROM turns').get() as { maxId: number };
+    return row.maxId ?? 0;
+  } catch (err) {
+    console.error('[context] failed to get max turn id:', err);
+    return 0;
   }
 }
