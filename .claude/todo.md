@@ -134,3 +134,7 @@ _Depends on: Phase 1 (Vosk interims). See `plan.md` §6.2, `architecture.md` §5
 - Sandbox bash has **no outbound network** (proxy 403): model downloads (Vosk/Whisper) and
   live Groq/API tests must be run on the user's hardware — flag such steps here as `[!]` when
   reached (`plan.md` §9 R8).
+
+Let's move forward now Let's skip this barge-in functionality for now.
+prepare a .claude files for work on the following features, Don't generate any code for now
+1. How it can control my device, how i can connect it to my application such as todoist, notepad, 
