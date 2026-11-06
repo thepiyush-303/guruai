@@ -39,8 +39,16 @@ function expectInvalidTransition(
 // ── IDLE ──────────────────────────────────────────────────────
 
 describe('IDLE state', () => {
-  it('speech_start → LISTENING, opens whisper pipe', () => {
-    expectTransition(ServerState.IDLE, 'speech_start', ServerState.LISTENING, 'OPEN_WHISPER_PIPE');
+  it('session_opener → LLM_STREAMING, GuruAI speaks first', () => {
+    expectTransition(ServerState.IDLE, 'session_opener', ServerState.LLM_STREAMING, 'START_LLM_STREAM');
+  });
+
+  it('session_opener is not valid mid-turn', () => {
+    expectInvalidTransition(ServerState.LISTENING, 'session_opener');
+  });
+
+  it('speech_start → LISTENING, opens STT stream', () => {
+    expectTransition(ServerState.IDLE, 'speech_start', ServerState.LISTENING, 'OPEN_STT_STREAM');
   });
 
   it('vad_misfire → IDLE, no-op', () => {
@@ -63,22 +71,22 @@ describe('LISTENING state', () => {
     expectTransition(ServerState.LISTENING, 'pcm_binary', ServerState.LISTENING);
   });
 
-  it('pcm_binary must NOT re-open the whisper pipe (would clear the audio buffer)', () => {
+  it('pcm_binary must NOT re-open the STT stream (would restart the utterance)', () => {
     const result = transition(ServerState.LISTENING, 'pcm_binary');
     expect(isTransitionError(result)).toBe(false);
     if (!isTransitionError(result)) {
-      // OPEN_WHISPER_PIPE clears ctx.audioBuffer; firing it per-frame wipes the
-      // buffered utterance and leaves Whisper nothing to transcribe at speech_end.
-      expect(result.sideEffects).not.toContain('OPEN_WHISPER_PIPE');
+      // OPEN_STT_STREAM begins a new utterance; firing it per-frame would throw
+      // away everything said so far.
+      expect(result.sideEffects).not.toContain('OPEN_STT_STREAM');
     }
   });
 
-  it('speech_end → TRANSCRIBING, sends EOF to whisper', () => {
-    expectTransition(ServerState.LISTENING, 'speech_end', ServerState.TRANSCRIBING, 'SEND_EOF_TO_WHISPER');
+  it('speech_end → TRANSCRIBING, commits STT', () => {
+    expectTransition(ServerState.LISTENING, 'speech_end', ServerState.TRANSCRIBING, 'COMMIT_STT');
   });
 
   it('vad_misfire → IDLE, discards buffer', () => {
-    expectTransition(ServerState.LISTENING, 'vad_misfire', ServerState.IDLE, 'DISCARD_WHISPER_BUFFER');
+    expectTransition(ServerState.LISTENING, 'vad_misfire', ServerState.IDLE, 'DISCARD_STT');
   });
 
   it('speech_start in LISTENING → INVALID_STATE (guard)', () => {
@@ -89,16 +97,16 @@ describe('LISTENING state', () => {
 // ── TRANSCRIBING ─────────────────────────────────────────────
 
 describe('TRANSCRIBING state', () => {
-  it('whisper_partial → TRANSCRIBING (emit transcript, trigger pre-fetch)', () => {
-    expectTransition(ServerState.TRANSCRIBING, 'whisper_partial', ServerState.TRANSCRIBING);
+  it('speech_start while finalizing is ignored', () => {
+    expectTransition(ServerState.TRANSCRIBING, 'speech_start', ServerState.TRANSCRIBING);
   });
 
-  it('whisper_final → LLM_STREAMING, starts LLM stream', () => {
-    expectTransition(ServerState.TRANSCRIBING, 'whisper_final', ServerState.LLM_STREAMING, 'START_LLM_STREAM');
+  it('stt_final → LLM_STREAMING, starts LLM stream', () => {
+    expectTransition(ServerState.TRANSCRIBING, 'stt_final', ServerState.LLM_STREAMING, 'START_LLM_STREAM');
   });
 
-  it('whisper_error → IDLE, notifies client', () => {
-    expectTransition(ServerState.TRANSCRIBING, 'whisper_error', ServerState.IDLE, 'NOTIFY_CLIENT_ERROR');
+  it('stt_error → IDLE, notifies client', () => {
+    expectTransition(ServerState.TRANSCRIBING, 'stt_error', ServerState.IDLE, 'NOTIFY_CLIENT_ERROR');
   });
 
   it('speech_start in TRANSCRIBING → TRANSCRIBING (ignore stray VAD while Whisper works)', () => {
@@ -111,8 +119,8 @@ describe('TRANSCRIBING state', () => {
 // ── LLM_STREAMING ────────────────────────────────────────────
 
 describe('LLM_STREAMING state', () => {
-  it('llm_token → TTS_STREAMING, spawns Piper', () => {
-    expectTransition(ServerState.LLM_STREAMING, 'llm_token', ServerState.TTS_STREAMING, 'SPAWN_PIPER');
+  it('llm_token → TTS_STREAMING, starts TTS', () => {
+    expectTransition(ServerState.LLM_STREAMING, 'llm_token', ServerState.TTS_STREAMING, 'START_TTS');
   });
 
   it('llm_tool_call → TOOL_EXECUTING, sends filler TTS', () => {
@@ -123,13 +131,13 @@ describe('LLM_STREAMING state', () => {
     expectTransition(ServerState.LLM_STREAMING, 'llm_stream_complete', ServerState.IDLE, 'SEND_TURN_COMPLETE');
   });
 
-  it('speech_start (barge-in) → BARGE_IN_INTERRUPTED, aborts Groq + kills Piper', () => {
+  it('speech_start (barge-in) → BARGE_IN_INTERRUPTED, aborts Groq + stops TTS', () => {
     const result = transition(ServerState.LLM_STREAMING, 'speech_start');
     expect(isTransitionError(result)).toBe(false);
     if (!isTransitionError(result)) {
       expect(result.nextState).toBe(ServerState.BARGE_IN_INTERRUPTED);
       expect(result.sideEffects).toContain('ABORT_LLM_STREAM');
-      expect(result.sideEffects).toContain('KILL_PIPER');
+      expect(result.sideEffects).toContain('STOP_TTS');
     }
   });
 });
@@ -137,7 +145,7 @@ describe('LLM_STREAMING state', () => {
 // ── TTS_STREAMING ────────────────────────────────────────────
 
 describe('TTS_STREAMING state', () => {
-  it('llm_token → TTS_STREAMING (more tokens queued for Piper)', () => {
+  it('llm_token → TTS_STREAMING (more tokens queued for TTS)', () => {
     expectTransition(ServerState.TTS_STREAMING, 'llm_token', ServerState.TTS_STREAMING);
   });
 
@@ -172,35 +180,35 @@ describe('TOOL_EXECUTING state', () => {
 // ── BARGE_IN_INTERRUPTED ─────────────────────────────────────
 
 describe('BARGE_IN_INTERRUPTED state', () => {
-  it('speech_start → LISTENING, re-opens whisper pipe', () => {
-    expectTransition(ServerState.BARGE_IN_INTERRUPTED, 'speech_start', ServerState.LISTENING, 'OPEN_WHISPER_PIPE');
+  it('speech_start → LISTENING, re-opens STT stream', () => {
+    expectTransition(ServerState.BARGE_IN_INTERRUPTED, 'speech_start', ServerState.LISTENING, 'OPEN_STT_STREAM');
   });
 
   it('vad_misfire → BARGE_IN_INTERRUPTED (ignore stale VAD event after barge-in)', () => {
     expectTransition(ServerState.BARGE_IN_INTERRUPTED, 'vad_misfire', ServerState.BARGE_IN_INTERRUPTED, 'NOOP');
   });
 
-  it('whisper_final in BARGE_IN_INTERRUPTED → INVALID_STATE', () => {
-    expectInvalidTransition(ServerState.BARGE_IN_INTERRUPTED, 'whisper_final');
+  it('stt_final in BARGE_IN_INTERRUPTED → INVALID_STATE', () => {
+    expectInvalidTransition(ServerState.BARGE_IN_INTERRUPTED, 'stt_final');
   });
 });
 
 // ── llm_error (Groq failure) handling ────────────────────────
 // Regression: a Groq failure must reset to IDLE and notify the client,
 // NOT throw INVALID_STATE and leave the session stuck (see prod incident
-// where llm_error was routed through whisper_error, invalid in LLM_STREAMING).
+// where llm_error was routed through stt_error, invalid in LLM_STREAMING).
 
 describe('llm_error handling', () => {
   it('LLM_STREAMING + llm_error → IDLE, notifies client', () => {
     expectTransition(ServerState.LLM_STREAMING, 'llm_error', ServerState.IDLE, 'NOTIFY_CLIENT_ERROR');
   });
 
-  it('TTS_STREAMING + llm_error → IDLE, kills Piper + notifies client', () => {
+  it('TTS_STREAMING + llm_error → IDLE, stops TTS + notifies client', () => {
     const result = transition(ServerState.TTS_STREAMING, 'llm_error');
     expect(isTransitionError(result)).toBe(false);
     if (!isTransitionError(result)) {
       expect(result.nextState).toBe(ServerState.IDLE);
-      expect(result.sideEffects).toContain('KILL_PIPER');
+      expect(result.sideEffects).toContain('STOP_TTS');
       expect(result.sideEffects).toContain('NOTIFY_CLIENT_ERROR');
     }
   });

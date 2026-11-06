@@ -1,26 +1,32 @@
 // ============================================================
 // sideEffects.ts — Side effect dispatcher
-// Phase 4: Groq LLM streaming replaces Phase 3 stubs.
+// Executes the named effects the pure state machine returns:
+// Gnani Prisma STT, Gnani Timbre TTS, Vosk live captions, LLM streams.
 // ============================================================
 
+import * as fs from 'fs';
 import WebSocket from 'ws';
-import { SideEffectName, SessionContext, ServerMessage, ServerState, IncomingEventType } from './types';
-import * as whisperProcess from './whisperProcess';
+import { SideEffectName, SessionContext, ServerMessage, ServerState, IncomingEventType, SessionPreferences } from './types';
+import { getStt } from './gnaniStt';
+import { getTts } from './gnaniTts';
 import * as voskProcess from './voskProcess';
-import * as piperProcess from './piperProcess';
+import { getLanguage, voskModelFor } from './languages';
 import { SentenceBuffer } from './sentenceBuffer';
 import { startGroqStream, abortGroqStream } from './groqStream';
 import { startGeminiStream, abortGeminiStream } from './geminiStream';
 import { setActiveSentenceBuffer } from './sharedState';
-import { executeWeatherTool } from './tools/weather';
-import { executeTodoistTool } from './tools/todoist';
+import { sanitizeForTTS } from './ttsUtils';
+import { SessionStore, refreshContext } from './session';
+import { openerInstruction } from './prompts/teacher';
+import { loadProfile } from './memory/learnerProfile';
+import { loadSessionMemory } from './memory/sessionMemory';
 
 // ── Sentence buffer & internal event callback ─────────────────
 
 let sentenceBuffer: SentenceBuffer | null = null;
 let activeWs: WebSocket | null = null;
 
-// Set by server.ts so Groq callbacks can fire handleInternalEvent
+// Set at startup so LLM / STT callbacks can fire handleInternalEvent
 let internalEventEmitter: ((event: IncomingEventType, payload?: unknown) => void) | null = null;
 
 export function setInternalEventEmitter(
@@ -31,13 +37,9 @@ export function setInternalEventEmitter(
 
 export function getActiveWs(): WebSocket | null { return activeWs; }
 
-function getSentenceBuffer(ws: WebSocket): SentenceBuffer {
-  if (!sentenceBuffer) {
-    sentenceBuffer = new SentenceBuffer((sentence) => {
-      piperProcess.synthesize(sentence, ws);
-    });
-  }
-  return sentenceBuffer;
+/** Fire an internal state-machine event (routed through server.ts → handleInternalEvent). */
+export function emitInternal(event: IncomingEventType, payload?: unknown): void {
+  internalEventEmitter?.(event, payload);
 }
 
 function resetSentenceBuffer(): void {
@@ -45,36 +47,35 @@ function resetSentenceBuffer(): void {
   sentenceBuffer = null;
 }
 
-// ── Public: register Whisper + Piper at server startup ────────
+// ── Public: speech services, wired at server startup ──────────
 
 /**
- * Called once at server startup to spawn subprocesses and wire
- * Whisper transcript events into the state machine.
+ * Called once at server startup: wires Gnani STT and Vosk events into the
+ * state machine and warms the Gnani TTS connection.
  * @param emitInternalEvent  Callback into messageHandler/server to fire internal events
  */
-export function initSubprocesses(
+export function initSpeechServices(
   emitInternalEvent: (event: IncomingEventType, payload?: unknown) => void
 ): void {
-  // Store so Groq callback can also fire internal events
   internalEventEmitter = emitInternalEvent;
 
-  // Wire Whisper transcript events → internal state machine events
-  whisperProcess.onWhisperEvent((ev) => {
-    switch (ev.type) {
-      case 'partial':
-        emitInternalEvent('whisper_partial', { text: ev.text });
-        break;
-      case 'final':
-        emitInternalEvent('whisper_final', { text: ev.text, duration_ms: ev.duration_ms });
-        break;
-      case 'error':
-        emitInternalEvent('whisper_error', { code: ev.code, msg: ev.msg });
-        break;
+  // Gnani Prisma → one final (or error) per utterance
+  getStt().onEvent((ev) => {
+    if (ev.type === 'final') {
+      emitInternalEvent('stt_final', {
+        text: ev.text,
+        duration_ms: ev.duration_ms,
+        detected_language: ev.detected_language,
+        gnani_latency_ms: ev.gnani_latency_ms,
+        via: ev.via,
+      });
+    } else {
+      emitInternalEvent('stt_error', { code: ev.code, msg: ev.msg });
     }
   });
 
-  // Wire Vosk live-caption events → internal state machine events.
-  // These are display-only: they never enter conversationHistory.
+  // Vosk live-caption events → internal events. Display-only: they never
+  // enter conversationHistory — Prisma's final is what the LLM sees.
   voskProcess.onVoskEvent((ev) => {
     switch (ev.type) {
       case 'partial':
@@ -84,28 +85,70 @@ export function initSubprocesses(
         emitInternalEvent('vosk_final', { text: ev.text });
         break;
       case 'error':
-        // Non-fatal: live captions degrade, Whisper finals are unaffected.
+        // Non-fatal: live captions degrade, Prisma finals are unaffected.
         console.error(`[vosk] ${ev.code}: ${ev.msg}`);
         break;
     }
   });
 
-  // Start Whisper subprocess
-  whisperProcess.start();
+  // Tell the client when speech output starts and finishes, so it can keep the
+  // mic closed for the whole answer (see TtsStateMessage).
+  getTts().onActivity((active) => {
+    const ws = activeWs;
+    if (!ws) return;
+    sendJson(ws, {
+      type: 'tts_state',
+      session_id: SessionStore.get()?.sessionId ?? '',
+      active,
+      timestamp_ms: Date.now(),
+    });
+  });
 
-  // Start Vosk subprocess (optional — disables itself if the model is missing)
-  voskProcess.start();
-
-  // Start Piper subprocess (optional — warns if model not configured)
-  piperProcess.start();
+  // Warm the TTS socket. STT and Vosk start once the session's language is known.
+  getTts().start();
 }
 
 /**
- * Feed one live PCM frame to the streaming recognizer.
- * Called per binary frame from messageHandler — no-op when Vosk is unavailable.
+ * Point every speech engine at the session's language.
+ * Returns whether live (Vosk) captions are available for it.
+ */
+export function applyPreferences(prefs: SessionPreferences): { liveCaptions: boolean; ttsVoice: string } {
+  const lang = getLanguage(prefs.language);
+  getStt().configure(lang);
+  getStt().connect();
+  getTts().configure(lang, prefs.voice);
+
+  let model = voskModelFor(lang);
+  if (model && !fs.existsSync(model)) {
+    console.warn(`[vosk] model for ${lang.label} not found at ${model} — live captions off`);
+    model = null;
+  }
+  voskProcess.setModel(model);
+  console.log(`[speech] language=${lang.label} stt=${lang.sttLanguageCode} tts=${lang.ttsLanguage} live_captions=${model !== null}`);
+  return { liveCaptions: model !== null, ttsVoice: getTts().voice };
+}
+
+/**
+ * Feed one live PCM frame to both recognizers: Gnani (authoritative final)
+ * and Vosk (live captions). Called per binary frame from messageHandler.
  */
 export function feedLiveStt(pcm: Buffer): void {
+  getStt().writeChunk(pcm);
   voskProcess.writeChunk(pcm);
+}
+
+/** The client disconnected: release the STT socket and silence any queued speech. */
+export function endSpeechSession(): void {
+  resetSentenceBuffer();
+  setActiveSentenceBuffer(null);
+  getStt().stop();
+  getTts().kill();
+}
+
+export function stopSpeechServices(): void {
+  getStt().stop();
+  getTts().stop();
+  voskProcess.stop();
 }
 
 // ── Dispatcher ─────────────────────────────────────────────────
@@ -122,14 +165,14 @@ export function dispatchSideEffects(
   activeWs = ws;
   for (const effect of effects) {
     switch (effect) {
-      case 'OPEN_WHISPER_PIPE':
-        openWhisperPipe(ctx);
+      case 'OPEN_STT_STREAM':
+        openSttStream(ctx);
         break;
-      case 'SEND_EOF_TO_WHISPER':
-        sendEofToWhisper(ctx);
+      case 'COMMIT_STT':
+        commitStt(ctx);
         break;
-      case 'DISCARD_WHISPER_BUFFER':
-        discardWhisperBuffer(ctx);
+      case 'DISCARD_STT':
+        discardStt(ctx);
         break;
       case 'START_LLM_STREAM':
         triggerLLMStream(ctx);
@@ -137,11 +180,11 @@ export function dispatchSideEffects(
       case 'ABORT_LLM_STREAM':
         triggerAbortLLM(ctx);
         break;
-      case 'SPAWN_PIPER':
-        spawnPiper(ws, ctx);
+      case 'START_TTS':
+        startTts(ws, ctx);
         break;
-      case 'KILL_PIPER':
-        killPiper(ws, ctx);
+      case 'STOP_TTS':
+        stopTts(ws, ctx);
         break;
       case 'SEND_FILLER_TTS':
         sendFillerTts(ws, ctx);
@@ -161,56 +204,46 @@ export function dispatchSideEffects(
   }
 }
 
-// ── Real Whisper side-effects ──────────────────────────────────
+// ── STT side-effects (Gnani Prisma + Vosk captions) ───────────
 
-function openWhisperPipe(ctx: SessionContext): void {
-  ctx.audioBuffer = [];
-  whisperProcess.start(); // idempotent — no-op if already running
+function openSttStream(ctx: SessionContext): void {
+  getStt().beginUtterance();
   voskProcess.resetSilent();  // drop any leftover recognizer state from the last turn
-  console.log(`[${ctx.sessionId}] OPEN_WHISPER_PIPE — audio buffer cleared, STT ready`);
+  console.log(`[${ctx.sessionId}] OPEN_STT_STREAM — utterance started`);
 }
 
-function sendEofToWhisper(ctx: SessionContext): void {
-  const frameCount = ctx.audioBuffer.length;
-  const byteCount = ctx.audioBuffer.reduce((s, b) => s + b.length, 0);
-  console.log(`[${ctx.sessionId}] SEND_EOF_TO_WHISPER — flushing ${frameCount} frames (${byteCount} bytes)`);
-
-  // Write all buffered PCM frames to Whisper stdin
-  for (const chunk of ctx.audioBuffer) {
-    whisperProcess.writeChunk(chunk);
-  }
-  ctx.audioBuffer = [];
-
-  // Send end-of-utterance sentinel
-  whisperProcess.sendEof();
-
+function commitStt(ctx: SessionContext): void {
+  console.log(`[${ctx.sessionId}] COMMIT_STT — awaiting Prisma final`);
+  getStt().commit();
   // Vosk already has every frame (fed live) — just flush its final caption.
   voskProcess.finalizeUtterance();
 }
 
-function discardWhisperBuffer(ctx: SessionContext): void {
-  console.log(`[${ctx.sessionId}] DISCARD_WHISPER_BUFFER — dropping ${ctx.audioBuffer.length} frames`);
-  ctx.audioBuffer = [];
-  whisperProcess.discard();
+function discardStt(ctx: SessionContext): void {
+  console.log(`[${ctx.sessionId}] DISCARD_STT — VAD misfire, utterance dropped`);
+  getStt().discard();
   voskProcess.resetSilent();  // discard live captions for the misfired utterance
 }
 
-// ── Real Piper side-effects ────────────────────────────────────
+// ── TTS side-effects (Gnani Timbre) ────────────────────────────
 
-function spawnPiper(ws: WebSocket, ctx: SessionContext): void {
+function startTts(ws: WebSocket, ctx: SessionContext): void {
+  const tts = getTts();
+  tts.beginTurn();
   const buf = new SentenceBuffer((sentence) => {
-    piperProcess.synthesize(sentence, ws);
+    const speakable = sanitizeForTTS(sentence);
+    if (speakable) tts.synthesize(speakable, ws);
   });
   sentenceBuffer = buf;
   setActiveSentenceBuffer(buf);   // share with messageHandler llm_token handler
-  console.log(`[${ctx.sessionId}] SPAWN_PIPER — sentence buffer active`);
+  console.log(`[${ctx.sessionId}] START_TTS — sentence buffer active`);
 }
 
-function killPiper(ws: WebSocket, ctx: SessionContext): void {
-  console.log(`[${ctx.sessionId}] KILL_PIPER — barge-in flush`);
+function stopTts(ws: WebSocket, ctx: SessionContext): void {
+  console.log(`[${ctx.sessionId}] STOP_TTS — speech cancelled`);
   resetSentenceBuffer();
   setActiveSentenceBuffer(null);   // clear messageHandler reference
-  piperProcess.kill();
+  getTts().kill();
 
   const msg: ServerMessage = {
     type: 'tts_interrupted',
@@ -223,10 +256,16 @@ function killPiper(ws: WebSocket, ctx: SessionContext): void {
 
 function sendFillerTts(ws: WebSocket, ctx: SessionContext): void {
   console.log(`[${ctx.sessionId}] SEND_FILLER_TTS`);
-  piperProcess.sendFillerPhrase(ws);
+  getTts().sendFillerPhrase(ws);
 }
 
-function executeTool(ws: WebSocket, ctx: SessionContext): void {
+// ── Tools ──────────────────────────────────────────────────────
+// GuruAI registers no tools yet (weather/Todoist were Vani's and are no longer
+// offered to the LLM; their modules remain in src/tools/). Phase 3 adds
+// set_notes. Any call that does arrive gets an error result so the LLM can
+// carry on rather than hang in TOOL_EXECUTING.
+
+function executeTool(_ws: WebSocket, ctx: SessionContext): void {
   const tool = ctx.pendingToolCall;
   if (!tool) {
     console.warn(`[${ctx.sessionId}] EXECUTE_TOOL but no pendingToolCall found`);
@@ -237,52 +276,13 @@ function executeTool(ws: WebSocket, ctx: SessionContext): void {
   const emit = internalEventEmitter;
   if (!emit) return;
 
-  console.log(`[${ctx.sessionId}] EXECUTE_TOOL: ${tool.name}(${tool.args})`);
-
-  // In a real app we'd dispatch to a registry. Here we just hardcode weather.
-  if (tool.name === 'get_weather') {
-    executeWeatherTool(tool.args).then(result => {
-      ctx.conversationHistory.push({
-        role: 'tool',
-        content: result,
-        tool_call_id: tool.id,
-      });
-      emit('tool_result_ready');
-    }).catch(err => {
-      console.error(`[${ctx.sessionId}] Tool execution failed:`, err);
-      ctx.conversationHistory.push({
-        role: 'tool',
-        content: JSON.stringify({ error: 'Tool execution failed locally' }),
-        tool_call_id: tool.id,
-      });
-      emit('tool_result_ready');
-    });
-  } else if (tool.name === 'add_todoist_task') {
-    executeTodoistTool(tool.args).then(result => {
-      ctx.conversationHistory.push({
-        role: 'tool',
-        content: result,
-        tool_call_id: tool.id,
-      });
-      emit('tool_result_ready');
-    }).catch(err => {
-      console.error(`[${ctx.sessionId}] Todoist tool failed:`, err);
-      ctx.conversationHistory.push({
-        role: 'tool',
-        content: JSON.stringify({ success: false, error: 'Todoist request failed.' }),
-        tool_call_id: tool.id,
-      });
-      emit('tool_result_ready');
-    });
-  } else {
-    // Unrecognized tool
-    ctx.conversationHistory.push({
-      role: 'tool',
-      content: JSON.stringify({ error: `Tool ${tool.name} is not implemented` }),
-      tool_call_id: tool.id,
-    });
-    emit('tool_result_ready');
-  }
+  console.log(`[${ctx.sessionId}] EXECUTE_TOOL: ${tool.name}(${tool.args}) — not available`);
+  ctx.conversationHistory.push({
+    role: 'tool',
+    content: JSON.stringify({ error: `Tool ${tool.name} is not available` }),
+    tool_call_id: tool.id,
+  });
+  emit('tool_result_ready');
 }
 
 // ── Generic LLM side-effects ──────────────────────────────────
@@ -295,7 +295,24 @@ function triggerLLMStream(ctx: SessionContext): void {
 
   const emit = internalEventEmitter;
   const provider = process.env.LLM_PROVIDER ?? 'groq';
-  
+
+  // Latest learner profile + session memory, every time (updated in the
+  // background between turns).
+  refreshContext(ctx);
+
+  // The opener: an in-memory instruction stands in for the student's turn.
+  ctx.openerActive = false;
+  if (ctx.pendingOpener) {
+    const kind = ctx.pendingOpener;
+    ctx.pendingOpener = undefined;
+    ctx.openerActive = true;
+    ctx.conversationHistory.push({
+      role: 'user',
+      content: openerInstruction(kind, loadProfile(), loadSessionMemory(ctx.sessionId).memory),
+      ephemeral: true,
+    });
+  }
+
   const startStreamPhase = provider === 'gemini' ? startGeminiStream : startGroqStream;
 
   // Fire-and-forget (async stream runs in background)
@@ -367,19 +384,17 @@ function sendTurnComplete(ws: WebSocket, ctx: SessionContext): void {
   sendJson(ws, msg);
   ctx.turnStartedAt = null;
   ctx.tokenCount = 0;
-  // Do NOT kill Piper here. It is a persistent --json-input daemon that is
-  // still synthesizing the sentences we just queued; SIGTERM would cut the
-  // audio before any PCM is produced (the turn "completes" the instant the LLM
-  // stream ends, long before TTS playback finishes). Piper is only terminated
-  // on barge-in (KILL_PIPER) or server shutdown (stop()); between turns it idles.
+  // Do NOT stop TTS here. The Timbre queue is still synthesizing the sentences
+  // we just queued — the turn "completes" the instant the LLM stream ends, long
+  // before the audio has finished. TTS is only cancelled by STOP_TTS or shutdown.
   resetSentenceBuffer();
   setActiveSentenceBuffer(null);  // clear messageHandler reference
   console.log(`[${ctx.sessionId}] turn_complete (latency=${latency}ms)`);
 }
 
 function notifyClientError(ws: WebSocket, ctx: SessionContext): void {
-  // If a specific error was stashed (e.g. an LLM/Groq failure), surface the
-  // real code+message; otherwise default to the STT failure message.
+  // If a specific error was stashed (an LLM or STT failure), surface the real
+  // code+message; otherwise default to the STT failure message.
   const pending = ctx.pendingError;
   const msg: ServerMessage = {
     type: 'error',

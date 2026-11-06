@@ -1,4 +1,4 @@
-# TODO — Vani Refinement Initiative (live tracker)
+# TODO — GuruAI (live tracker)
 
 > The single source of truth for **what is being worked on right now**.
 > Plan lives in `plan.md`; how in `architecture.md`; why in `decisions.md`.
@@ -8,23 +8,66 @@
 
 ---
 
-## ▶ Current pointer
+## ▶ Current pointer## ▶ Current pointer — GuruAI (2026-11-06)
 
-**Phase 2 (Frontend rebuild) code is landed, builds clean, and lint/type-check/tests are green.
-Awaiting on-hardware validation** (same box as Phase 1 — needs the Vosk model + a mic).
+The project is now **GuruAI**, a multilingual voice study teacher on Gnani.ai (Prisma STT + Timbre
+TTS). Design: `guruai-design.md`. Decisions: G1–G8 in `decisions.md`.
 
-`npm start` now serves the Vite build from `client/dist`, so the client must be built first:
-`cd client && npm run build`. In development, `cd client && npm run dev` serves the UI on Vite's
-own port and talks to the Node server over the WebSocket.
+### Phase G1 — Gnani migration + language selection  `[~] code complete, pending live-API validation`
+- [x] `src/languages.ts` language table (10 languages + Hinglish)
+- [x] `src/gnaniStt.ts` Prisma realtime client (1024-byte framing, commit aggregation, misfire discard)
+- [x] `src/gnaniTts.ts` Timbre realtime client (serial queue, raw s16le 22050 Hz, cancel)
+- [x] `src/ttsFraming.ts` (framing moved from Piper, even-length payloads, WAV-header guard)
+- [x] Sentence buffer retuned for network TTS (danda, min/max lengths)
+- [x] State machine and effect renames (`stt_*`, `*_STT`, `START_TTS`/`STOP_TTS`); `audioBuffer` removed
+- [x] `session_init.preferences`, `update_preferences`, `preferences_ack`
+- [x] Vosk per-language models (`setModel`), display-only
+- [x] Session-driven system prompt; Gemini/Groq prompt bugs fixed; Vani tools unregistered
+- [x] Client: SessionSetup (language/class/board), language chip, Indic fonts, VAD redemption 12
+- [x] Removed Whisper and Piper; `.env.example`, `requirements.txt`, `vocab.txt` updated
+- [x] Tests: 99 passing (new: gnaniStt, gnaniTts, sentenceBuffer, session); mock end-to-end turn passes
+- [!] Live smoke with a real `GNANI_API_KEY`: `npm run smoke:gnani -- tts "…" hi` and `-- stt file.wav hi`. **User key needed.**
+- [!] On-hardware run in a browser with a mic: Hindi turn, Tamil switch, latency logs. **User hardware.**
+- [ ] Confirm which script Hinglish TTS (`hi-en`) prefers and adjust its LLM directive
 
-Next: on hardware, walk the four observational acceptance criteria (orb waves on both voices,
-live user captions, assistant caption/audio sync, Mute produces zero frames), then start
-**Phase 3 (Persistent context)** or **Phase 4 (Barge-in)**.
+### Phase G1.1 — Live-run fixes, voices, sessions  `[~] code complete, pending live re-test`  (design doc §5.12–5.14)
+- [x] Hinglish: single STT locale + codemix (the live API rejected `hi-IN,en-IN`)
+- [x] No reconnect storm after a 1008 config rejection; the server's reason reaches the student
+- [x] Outbound frame pacing (no bursts); VAD threshold 0.5
+- [x] REST STT retry for failed/empty streaming utterances
+- [x] Comma-split fix (no 26-request replies); prompt forbids headings/section labels
+- [x] Voice catalog + picker with spoken samples (`/api/voices`, `/api/voice-preview`); voice per session; gendered self-reference
+- [x] Sessions: saved per conversation, bound to a language, grouped by language, resumable from the start screen or the Sessions panel; per-session context and summary; migration of old turns
+- [x] Tests: 116 passing; mock end-to-end of new/switch/resume/preview
+- [!] Live re-test with the real key: Hinglish turn, a voice preview per language, resume after a server restart. **User.**
+
+### Phase G1.2 — Second live run fixes + session groups  `[~] code complete, pending live re-test`  (design doc §5.16–5.17)
+- [x] Layout: stage no longer spills over header/controls (the "frozen page"); long answers scroll; follow-bottom only when pinned
+- [x] Mic stays closed for the whole spoken answer (`tts_state`); mid-utterance gate → `vad_misfire`
+- [x] TTS inactivity timeout (12 s) replaces the 15 s total cap that cut long answers
+- [x] Individual sessions + student-made groups (create/rename/delete, new session in group, move)
+- [x] Content-generated titles (3–5 words), refined at 6/12 turns, user rename wins; old sessions re-titled
+- [x] 127 tests; mock e2e of slow-TTS answer, tts_state, titles, groups
+- [!] Live re-test: a long answer end to end (all lines spoken, no STT_EMPTY after), scrolling it, titles appearing. **User.**
+
+### Phase G2 — Teacher: chunks, analogies, interaction, memory  `[~] code complete, pending live test`  (design doc §6)
+- [x] Teaching-method prompt (`src/prompts/teacher.ts`): intuition → analogy → bridge → one hand-back; responding to answers
+- [x] Session memory (`session_context`): topic, gist, lesson plan with chunk status, student state, last offer; summaries migrated
+- [x] Global learner profile (`learner_profile`): allowed keys, sensitive filter, memory switch, About-you tab with delete
+- [x] Background memory updater: one JSON call per exchange, serial per session; summarizer removed
+- [x] Prompt rebuilt from the DB before every answer; history replayed 12 messages (Groq + Gemini)
+- [x] Opener: greeting for new sessions, welcome-back recap for resumed ones (not stored)
+- [x] Lesson progress card in the sidebar (`session_context` message)
+- [x] 155 tests; mock e2e of opener → plan → turn 2 prompt → resume recap
+- [!] Live test with the real model (quality of chunking/analogies; consider `openai/gpt-oss-120b`). **User.**
+### Phase G3 — Live notes + PDF  `[ ] designed, not started` (design doc §7)
 
 ---
 
-## Legend
-`[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked · `[-]` cancelled
+> Everything below is the **Vani-era tracker**, kept for history. It is superseded by the GuruAI
+> phases above. Its Whisper/Piper items no longer apply.
+
+started · `[~]` in progress · `[x]` done · `[!]` blocked · `[-]` cancelled
 
 ---
 

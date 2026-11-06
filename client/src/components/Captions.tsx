@@ -42,19 +42,27 @@ export function TranscriptSide({ variant, label, history, children }: Transcript
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Keep the newest turn in view: the column snaps to the bottom whenever its
-  // content grows — a new bubble, streaming tokens, or the word-by-word reveal
-  // (Fix #3, "scroll back to the middle when new text appears"). Once growth
-  // stops, the user is free to scroll up through the history.
+  // Keep the newest words in view — but only while the reader is already at
+  // the bottom. Once they scroll up to re-read, growth (streaming tokens, the
+  // word-by-word reveal) no longer yanks them back down; scrolling back to the
+  // bottom resumes following.
+  const pinnedRef = useRef(true);
   useEffect(() => {
     const el = scrollRef.current;
     const list = listRef.current;
     if (!el || !list) return;
+    const onScroll = () => {
+      pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    };
     const ro = new ResizeObserver(() => {
-      el.scrollTop = el.scrollHeight;
+      if (pinnedRef.current) el.scrollTop = el.scrollHeight;
     });
+    el.addEventListener('scroll', onScroll, { passive: true });
     ro.observe(list);
-    return () => ro.disconnect();
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      ro.disconnect();
+    };
   }, []);
 
   return (
@@ -78,7 +86,7 @@ export function TranscriptSide({ variant, label, history, children }: Transcript
 
 interface UserCaptionProps {
   text: string;
-  /** Whisper has replaced the Vosk interims with the real transcript. */
+  /** Prisma's final has replaced the Vosk interims with the real transcript. */
   final: boolean;
   /** Shown when there is nothing to show — says what to do next. */
   placeholder: string;

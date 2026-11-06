@@ -5,22 +5,21 @@
 
 import 'dotenv/config';
 import { WebSocketServer, WebSocket } from 'ws';
-import { v4 as uuidv4 } from 'uuid';
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionInitMessage, ServerMessage } from './types';
-import { createSession, SessionStore } from './session';
+import { SessionStore } from './session';
 import { handleTextMessage, handleBinaryMessage, handleInternalEvent } from './messageHandler';
-import { initSubprocesses } from './sideEffects';
-import { initContextStore, loadRecentTurns } from './contextStore';
-import * as whisperProcess from './whisperProcess';
-import * as voskProcess from './voskProcess';
-import * as piperProcess from './piperProcess';
+import { initSpeechServices, endSpeechSession, stopSpeechServices } from './sideEffects';
+import { initContextStore } from './contextStore';
+import { openSession, sendSessionContext } from './sessionLifecycle';
+import { onMemoryUpdated } from './memory/memoryUpdater';
+import { handleApi } from './httpApi';
+import { onSessionTitled, titleBacklog } from './titler';
 
 const PORT = parseInt(process.env.PORT ?? '8765', 10);
 const HTTP_PORT = parseInt(process.env.HTTP_PORT ?? '3000', 10);
-const SERVER_VERSION = '0.1.0';
 // The frontend is a Vite app in client/. Production serves its build output;
 // `npm run build` inside client/ produces it. During frontend development the
 // Vite dev server serves the same files on its own port and talks to this
@@ -42,6 +41,12 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 const httpServer = http.createServer((req, res) => {
+  // JSON / audio API for the client (sessions, voices, voice previews).
+  if (req.url?.startsWith('/api/')) {
+    void handleApi(req, res);
+    return;
+  }
+
   const urlPath = req.url === '/' ? '/index.html' : (req.url ?? '/index.html');
   const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath));
 
@@ -78,9 +83,26 @@ console.log(`[server] WebSocket server listening on port ${PORT}`);
 // Open the durable transcript store (disables itself if better-sqlite3 is absent).
 initContextStore();
 
-// ── Initialize subprocesses (Whisper + Piper) ─────────────────
-// Wire internal Whisper transcript events through the state machine.
-initSubprocesses((eventType, payload) => {
+// Session titles are generated in the background; tell the open client.
+onSessionTitled((sessionId, title) => {
+  const ws = activeWs;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'session_updated', session_id: sessionId, title } satisfies ServerMessage));
+  }
+});
+// Lesson progress changes after each background memory update.
+onMemoryUpdated((sessionId, view) => {
+  const ws = activeWs;
+  if (ws && ws.readyState === WebSocket.OPEN && SessionStore.get()?.sessionId === sessionId) {
+    sendSessionContext(ws, sessionId, view);
+  }
+});
+// Name sessions saved before titles were generated.
+setTimeout(titleBacklog, 3000);
+
+// ── Initialize speech services (Gnani STT/TTS + Vosk captions) ─
+// Wire STT, caption and LLM events through the state machine.
+initSpeechServices((eventType, payload) => {
   const ctx = SessionStore.get();
   if (!ctx) return;  // no active session — discard event
   const ws = activeWs;
@@ -145,38 +167,15 @@ wss.on('connection', (ws: WebSocket) => {
         return;
       }
 
-      // ── Create session ─────────────────────────────────────
-      const sessionId = initMsg.session_id ?? uuidv4();
-      const ctx = createSession(sessionId);
-      SessionStore.set(ctx);
+      // ── Open (or resume) the study session ─────────────────
       initialized = true;
       clearTimeout(initTimeout);
-
-      console.log(`[server] Session ${sessionId} initialized`);
-
-      // ── Send session_ack ───────────────────────────────────
-      const ack: ServerMessage = {
-        type: 'session_ack',
-        session_id: sessionId,
-        server_version: SERVER_VERSION,
-        tts_sample_rate: 22050,
-        state: ctx.state,
-      };
-      ws.send(JSON.stringify(ack));
-
-      // ── Send the durable transcript for the history sidebar ──
-      // Display-only past turns (earlier sessions + this session's prior turns).
-      // No-op payload when the store is disabled or empty.
-      const pastTurns = loadRecentTurns();
-      if (pastTurns.length > 0) {
-        const history: ServerMessage = {
-          type: 'history_load',
-          session_id: sessionId,
-          turns: pastTurns,
-        };
-        ws.send(JSON.stringify(history));
-        console.log(`[server] Sent ${pastTurns.length} past turns to session ${sessionId}`);
-      }
+      openSession(ws, {
+        sessionId: initMsg.session_id,
+        preferences: initMsg.preferences,
+        resume: initMsg.resume === true,
+        groupId: initMsg.group_id,
+      });
 
       // ── Register post-init message handler ────────────────
       ws.on('message', (msgData, msgIsBinary) => {
@@ -199,6 +198,7 @@ wss.on('connection', (ws: WebSocket) => {
     clearTimeout(initTimeout);
     const sessionId = SessionStore.get()?.sessionId ?? 'unknown';
     console.log(`[server] Connection closed — session=${sessionId} code=${code} reason=${reason.toString() || '(none)'}`);
+    if (initialized) endSpeechSession();
     SessionStore.clear();
     activeWs = null;
     initialized = false;
@@ -218,9 +218,7 @@ wss.on('error', (err) => {
 // ── Graceful shutdown ──────────────────────────────────────────
 process.on('SIGINT', () => {
   console.log('\n[server] SIGINT received — shutting down gracefully');
-  whisperProcess.stop();
-  voskProcess.stop();
-  piperProcess.stop();
+  stopSpeechServices();
   httpServer.close();
   wss.close(() => {
     console.log('[server] Server closed');
@@ -230,9 +228,7 @@ process.on('SIGINT', () => {
 
 process.on('SIGTERM', () => {
   console.log('[server] SIGTERM received — shutting down gracefully');
-  whisperProcess.stop();
-  voskProcess.stop();
-  piperProcess.stop();
+  stopSpeechServices();
   httpServer.close();
   wss.close(() => process.exit(0));
 });

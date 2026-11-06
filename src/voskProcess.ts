@@ -1,8 +1,10 @@
 // ============================================================
 // voskProcess.ts — Vosk streaming-STT persistent subprocess
 // Produces REAL interim captions while the user is still speaking.
-// Display-only: Whisper still produces the final sent to the LLM.
-// Same stdin framing as whisperProcess, plus a silent-reset sentinel.
+// Display-only: Gnani Prisma produces the final sent to the LLM (Prisma has
+// no interim results, which is why Vosk stays). The model is chosen per
+// language via setModel(); no model → no live captions.
+// stdin: length-prefixed PCM, plus finalize / silent-reset sentinels.
 // ============================================================
 
 import { spawn, ChildProcess } from 'child_process';
@@ -22,7 +24,7 @@ const RESTART_DELAY_MS = 500;
 
 // A model-less or broken install exits immediately. Restarting forever would
 // spam the logs and burn CPU, so give up after a few fast failures and let the
-// pipeline run without live captions (Whisper finals are unaffected).
+// pipeline run without live captions (Prisma finals are unaffected).
 const FAST_FAILURE_MS = 3_000;
 const MAX_FAST_FAILURES = 3;
 
@@ -35,6 +37,7 @@ let isStarted = false;
 let disabled = false;          // true once we stop trying to respawn
 let spawnedAt = 0;
 let fastFailures = 0;
+let modelPath: string | null = null;
 
 // ── Public API ────────────────────────────────────────────────
 
@@ -47,12 +50,35 @@ export function onVoskEvent(cb: VoskTranscriptCallback): void {
 }
 
 /**
- * Start the Vosk subprocess. Idempotent; a no-op once disabled.
+ * Start the Vosk subprocess. Idempotent; a no-op once disabled or with no model.
  */
 export function start(): void {
-  if (disabled) return;
+  if (disabled || !modelPath) return;
   if (proc && !proc.killed) return;
   spawnVosk();
+}
+
+/**
+ * Switch the recognizer to another language's model (restarts the process).
+ * `null` stops Vosk: that language has no live captions.
+ */
+export function setModel(path: string | null): void {
+  if (path === modelPath && (path === null || (proc && !proc.killed))) return;
+  modelPath = path;
+
+  // Stop the current process without triggering the restart logic.
+  isStarted = false;
+  if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+  if (proc) { proc.kill('SIGTERM'); proc = null; }
+
+  disabled = false;
+  fastFailures = 0;
+  if (path) {
+    console.log(`[vosk] using model ${path}`);
+    spawnVosk();
+  } else {
+    console.log('[vosk] no model for this language — live captions off');
+  }
 }
 
 /** True when live captions are available. */
@@ -112,20 +138,25 @@ function spawnVosk(): void {
 
   console.log(`[vosk] Spawning subprocess: ${PYTHON} ${SCRIPT}`);
 
-  proc = spawn(PYTHON, [SCRIPT], {
+  const child = spawn(PYTHON, [SCRIPT], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      ...(modelPath ? { VOSK_MODEL_PATH: modelPath } : {}),
       PYTHONUNBUFFERED: '1',   // JSON lines must arrive immediately
     },
   });
+  proc = child;
+  // Writes racing a restart can hit a closed pipe; captions are best-effort.
+  child.stdin?.on('error', () => { /* EPIPE during restart — ignore */ });
 
-  proc.stderr?.on('data', (chunk: Buffer) => {
+  child.stderr?.on('data', (chunk: Buffer) => {
     process.stderr.write(`[vosk|py] ${chunk.toString()}`);
   });
 
-  const rl = readline.createInterface({ input: proc.stdout!, crlfDelay: Infinity });
+  const rl = readline.createInterface({ input: child.stdout!, crlfDelay: Infinity });
   rl.on('line', (line) => {
+    if (proc !== child) return;  // output from a process we already replaced
     const trimmed = line.trim();
     if (!trimmed) return;
 
@@ -140,11 +171,12 @@ function spawnVosk(): void {
     transcriptCallback?.(event);
   });
 
-  proc.on('exit', (code, signal) => {
+  child.on('exit', (code, signal) => {
+    rl.close();
+    if (proc !== child) return;  // replaced by setModel() — not a crash
     const uptime = Date.now() - spawnedAt;
     console.warn(`[vosk] Process exited (code=${code} signal=${signal} uptime=${uptime}ms)`);
     proc = null;
-    rl.close();
 
     if (!isStarted) return;  // deliberate stop()
 
@@ -156,7 +188,7 @@ function spawnVosk(): void {
       console.error(
         '[vosk] Disabled after repeated immediate exits — live captions are off. ' +
         'Check the [vosk|py] logs above (most likely a missing model or `pip install vosk`). ' +
-        'Whisper transcription is unaffected.',
+        'Gnani transcription is unaffected.',
       );
       return;
     }
@@ -165,7 +197,7 @@ function spawnVosk(): void {
     restartTimer = setTimeout(spawnVosk, RESTART_DELAY_MS);
   });
 
-  proc.on('error', (err) => {
+  child.on('error', (err) => {
     console.error(`[vosk] Spawn error: ${err.message}`);
     // 'exit' follows and handles restart/disable
   });

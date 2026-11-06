@@ -5,8 +5,7 @@
 
 import { GoogleGenAI } from '@google/genai';
 import { SessionContext } from './types';
-import { todoistToolDeclaration } from './tools/todoist';
-import { sanitizeForTTS } from './ttsUtils';
+import { sanitizeTtsChunk } from './ttsUtils';
 import { GroqEventCallback } from './groqStream'; // we reuse the callback type
 
 // ── Gemini client singleton ───────────────────────────────────
@@ -15,24 +14,16 @@ const apiKey = process.env.GEMINI_API_KEY ?? '';
 // Instantiate AI only if API key exists, otherwise we'll fail gracefully later
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
-// User specified gemini-2.5-flash-lite in the request
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-2.5-flash-lite';
 
-const SYSTEM_PROMPT = `You are Vani, a helpful and concise voice assistant. Your replies are spoken aloud.
+/** Recent messages replayed verbatim; matches groqStream.ts. */
+const MAX_HISTORY_MESSAGES = 12;
 
-SPEECH STYLE:
-- For casual/factual questions: answer in 1-2 sentences maximum.
-- Never use markdown, bullet points, lists, or URLs — speak naturally.
-- Only give longer replies when the user asks for a story, explanation, or step-by-step instructions.
+// Used only if a session somehow has no system message.
+const FALLBACK_SYSTEM_PROMPT = 'You are GuruAI, a patient teacher for Indian students. Your replies are spoken aloud: no markdown, lists or URLs.';
 
-TOOL USE — CRITICAL RULES:
-- You have access to: get_weather, add_todoist_task, and Google Search (grounding).
-- ONLY call get_weather when the user EXPLICITLY asks about current weather or temperature for a specific place.
-- ONLY call add_todoist_task when the user explicitly asks to add a reminder, task, or to-do item.
-- For general knowledge and current events, rely on your Google Search grounding.
-- NEVER call any tool for creative questions, stories, opinions, or anything that does not require real-time external data.
-- If you are unsure whether to call a tool, DO NOT call it — just answer directly.
-- NEVER read URLs, citation brackets like [1], or web addresses out loud.`;
+// Appended to the session prompt because only Gemini has Search grounding.
+const GROUNDING_NOTE = 'You can use Google Search for current facts. Never read URLs, citation brackets like [1], or web addresses out loud.';
 
 let activeAbortController: AbortController | null = null;
 
@@ -40,46 +31,14 @@ export function abortGeminiStream(): void {
   if (activeAbortController) {
     activeAbortController.abort();
     activeAbortController = null;
-    console.log('[gemini] Stream aborted (barge-in)');
+    console.log('[gemini] Stream aborted');
   }
 }
 
 /**
- * Weather tool in Gemini functionDeclarations format.
- */
-const geminiWeatherTool = {
-  functionDeclarations: [
-    {
-      name: 'get_weather',
-      description: 'Get the current weather in a given location',
-      parameters: {
-        type: 'OBJECT',
-        properties: {
-          location: {
-            type: 'STRING',
-            description: 'The city and state, e.g. San Francisco, CA',
-          },
-        },
-        required: ['location'],
-      },
-    },
-  ],
-};
-
-/**
- * Todoist tool in Gemini functionDeclarations format.
- * Bundled with weather in a single functionDeclarations array.
- */
-const geminiFunctionTools = {
-  functionDeclarations: [
-    geminiWeatherTool.functionDeclarations[0],
-    todoistToolDeclaration,
-  ],
-};
-
-/**
  * Google Search Grounding tool (PRD_v2.md §B.2).
- * Mutually exclusive with tool_choice:"any" — always use auto (default).
+ * GuruAI registers no function tools yet (Phase 3 adds set_notes), so
+ * grounding is the only tool offered.
  */
 const googleSearchTool = { googleSearch: {} };
 
@@ -102,14 +61,23 @@ export async function startGeminiStream(
     return;
   }
 
+  // The session's system message becomes systemInstruction — it must NOT be
+  // sent as a conversation turn (Gemini has no 'system' role in contents).
+  const systemMessage = ctx.conversationHistory.find((m) => m.role === 'system');
+  const systemInstruction = `${systemMessage?.content ?? FALLBACK_SYSTEM_PROMPT}\n\n${GROUNDING_NOTE}`;
+
   // Convert generic conversation history to Gemini 'contents' array
-  const contents = ctx.conversationHistory.map((m) => {
+  // Only the recent tail is replayed verbatim (older turns live in the session
+  // memory gist). Never start on an orphaned tool result.
+  let recent = ctx.conversationHistory.filter((m) => m.role !== 'system').slice(-MAX_HISTORY_MESSAGES);
+  while (recent.length > 0 && recent[0].role === 'tool') recent = recent.slice(1);
+  const contents = recent.map((m) => {
     if (m.role === 'tool') {
       return {
         role: 'user', // For gemini SDK, tool result is passed as 'user' role with functionResponse
         parts: [{ 
             functionResponse: { 
-                name: (m as any).tool_call_id || 'get_weather', 
+                name: (m as any).tool_call_id || 'unknown_tool',
                 response: JSON.parse(m.content || '{}') 
             } 
         }],
@@ -143,7 +111,7 @@ export async function startGeminiStream(
   
   while (attempt <= MAX_RETRIES) {
     try {
-      await streamCompletion(contents, signal, ctx, onEvent, useTools);
+      await streamCompletion(contents, systemInstruction, signal, ctx, onEvent, useTools);
       activeAbortController = null;
       return;
     } catch (err: any) {
@@ -155,7 +123,7 @@ export async function startGeminiStream(
       }
       
       if (err.name === 'AbortError' || signal.aborted) {
-        console.log('[gemini] Stream cancelled by barge-in');
+        console.log('[gemini] Stream cancelled');
         activeAbortController = null;
         return;
       }
@@ -177,6 +145,7 @@ export async function startGeminiStream(
 
 async function streamCompletion(
   contents: any[],
+  systemInstruction: string,
   signal: AbortSignal,
   ctx: SessionContext,
   onEvent: GroqEventCallback,
@@ -185,15 +154,13 @@ async function streamCompletion(
 
   if (!ai) throw new Error('Gemini AI instance is null');
 
-  const tools = useTools
-    ? [googleSearchTool as any, geminiFunctionTools as any]
-    : undefined;
+  const tools = useTools ? [googleSearchTool as any] : undefined;
 
   const stream = await ai.models.generateContentStream({
     model: GEMINI_MODEL,
     contents,
     config: {
-      systemInstruction: SYSTEM_PROMPT,
+      systemInstruction,
       tools,
     },
   });
@@ -259,7 +226,7 @@ async function streamCompletion(
           const rest = thinkBuffer.slice(endIdx + 8);
           thinkBuffer = '';
           if (rest) {
-            const clean = sanitizeForTTS(rest);
+            const clean = sanitizeTtsChunk(rest);
             if (clean) {
               fullText += clean;
               ctx.tokenCount++;
@@ -274,7 +241,7 @@ async function streamCompletion(
         if (startIdx !== -1) {
           const before = thinkBuffer.slice(0, startIdx);
           if (before) {
-            const clean = sanitizeForTTS(before);
+            const clean = sanitizeTtsChunk(before);
             if (clean) {
               fullText += clean;
               ctx.tokenCount++;
@@ -290,7 +257,7 @@ async function streamCompletion(
              const after = thinkBuffer.slice(endIdx + 8);
              thinkBuffer = '';
              if (after) {
-               const clean = sanitizeForTTS(after);
+               const clean = sanitizeTtsChunk(after);
                if (clean) {
                  fullText += clean;
                  ctx.tokenCount++;
@@ -311,7 +278,7 @@ async function streamCompletion(
           if (holdIdx !== -1) {
             const before = thinkBuffer.slice(0, holdIdx);
             if (before) {
-              const clean = sanitizeForTTS(before);
+              const clean = sanitizeTtsChunk(before);
               if (clean) {
                 fullText += clean;
                 ctx.tokenCount++;
@@ -320,7 +287,7 @@ async function streamCompletion(
             }
             thinkBuffer = thinkBuffer.slice(holdIdx);
           } else {
-            const clean = sanitizeForTTS(thinkBuffer);
+            const clean = sanitizeTtsChunk(thinkBuffer);
             if (clean) {
               fullText += clean;
               ctx.tokenCount++;

@@ -2,7 +2,7 @@
 // ttsUtils.test.ts — Unit tests for sanitizeForTTS
 // ============================================================
 
-import { sanitizeForTTS } from '../ttsUtils';
+import { sanitizeForTTS, sanitizeTtsChunk } from '../ttsUtils';
 
 describe('sanitizeForTTS', () => {
   // ── Bare URLs ──────────────────────────────────────────────
@@ -84,5 +84,33 @@ describe('sanitizeForTTS', () => {
   it('preserves natural sentence with a number in brackets not a citation', () => {
     // [abc] should not be affected — only numeric-only brackets
     expect(sanitizeForTTS('Press [Enter] to continue.')).toBe('Press [Enter] to continue.');
+  });
+});
+
+describe('sanitizeForTTS — markdown and emoji', () => {
+  it('strips bold and heading marks', () => {
+    expect(sanitizeForTTS('## Newton ka **pehla** niyam')).toBe('Newton ka pehla niyam');
+  });
+
+  it('strips inline code marks', () => {
+    expect(sanitizeForTTS('Use the `print` function')).toBe('Use the print function');
+  });
+
+  it('strips emoji', () => {
+    expect(sanitizeForTTS('Great job! 🎉👍')).toBe('Great job!');
+  });
+
+  it('leaves Indic text intact', () => {
+    expect(sanitizeForTTS('प्रकाश संश्लेषण क्या है?')).toBe('प्रकाश संश्लेषण क्या है?');
+  });
+});
+
+describe('sanitizeTtsChunk — streamed chunks', () => {
+  it('keeps the space between words split across chunks', () => {
+    expect(sanitizeTtsChunk('first law') + sanitizeTtsChunk(' states that')).toBe('first law states that');
+  });
+
+  it('still strips markdown inside a chunk', () => {
+    expect(sanitizeTtsChunk(' **inertia** ')).toBe(' inertia ');
   });
 });

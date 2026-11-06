@@ -1,41 +1,52 @@
 // ============================================================
 // sentenceBuffer.ts — Sentence-boundary buffering for TTS
-// Accumulates LLM token deltas and emits complete sentences
-// to Piper so we don't start synthesis mid-sentence.
+// Accumulates LLM token deltas and emits speakable fragments.
+//
+// Tuned for a NETWORK TTS (Gnani Timbre): each fragment is one request and one
+// round trip, and very short fragments sound choppy, so we prefer whole
+// sentences. Piper (local) could afford comma-level fragments; Timbre cannot.
 // ============================================================
 
-// Regex matches sentence-ending or phrase-ending punctuation followed by whitespace or end-of-string.
-// Also treats newlines as natural boundaries. We use commas and semicolons to stream chunks
-// faster to TTS for lower latency audio onset.
-const SENTENCE_END_RE = /[,.?!;:]+\s+|[,.?!;:]+$|\n/;
+/** Hard boundaries: sentence-ending punctuation (incl. the Indic danda । ॥) or a newline. */
+const HARD_END_RE = /[.?!।॥]+["')\]]*(?=\s)|[.?!।॥]+["')\]]*$|\n+/;
 
-// Maximum ms to wait before flushing an incomplete fragment anyway.
-// We lowered this to force Piper to start synthesizing if the LLM emits a long phrase without punctuation.
-const FLUSH_TIMEOUT_MS = 150;
+/** Soft boundaries: clause punctuation — only honoured once the buffer is long. */
+const SOFT_END_RE = /[,;:]+(?=\s)/;
 
-// The FIRST fragment of a turn is what the user perceives as response latency, so
-// we flush it on a much shorter timeout when no punctuation boundary has arrived
-// yet. Subsequent fragments use the normal timeout to keep mid-reply prosody smooth.
-const FIRST_FLUSH_TIMEOUT_MS = 60;
+/** Below this a fragment waits to merge with the next one. */
+const MIN_CHUNK_CHARS = 24;
+
+/** A clause boundary counts only if the fragment before it is at least this long. */
+const SOFT_SPLIT_CHARS = 120;
+
+/** Never send a fragment longer than this — split at the last space instead. */
+const MAX_CHUNK_CHARS = 220;
+
+/** The first fragment is the user's perceived latency: flush it sooner. */
+const FIRST_FLUSH_TIMEOUT_MS = 250;
+
+/** Later fragments: wait longer for a real boundary to keep prosody natural. */
+const FLUSH_TIMEOUT_MS = 600;
 
 export type SentenceCallback = (sentence: string) => void;
+
+export interface SentenceBufferOptions {
+  firstFlushMs?: number;
+  flushMs?: number;
+}
 
 export class SentenceBuffer {
   private buffer = '';
   private onSentence: SentenceCallback;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
-  // True until the first fragment of this turn is emitted; drives the shorter
-  // first-flush timeout so time-to-first-audio is minimized.
   private firstChunkPending = true;
+  private firstFlushMs: number;
+  private flushMs: number;
 
-  constructor(onSentence: SentenceCallback) {
+  constructor(onSentence: SentenceCallback, opts: SentenceBufferOptions = {}) {
     this.onSentence = onSentence;
-  }
-
-  /** Emit a completed fragment and mark that the turn's first chunk has gone out. */
-  private emit(sentence: string): void {
-    this.firstChunkPending = false;
-    this.onSentence(sentence);
+    this.firstFlushMs = opts.firstFlushMs ?? FIRST_FLUSH_TIMEOUT_MS;
+    this.flushMs = opts.flushMs ?? FLUSH_TIMEOUT_MS;
   }
 
   /** Append a new token delta from the LLM stream. */
@@ -44,62 +55,106 @@ export class SentenceBuffer {
     this.tryFlush();
   }
 
-  /**
-   * Try to extract and emit complete sentences from the buffer.
-   * Schedules a timeout flush for any remaining fragment.
-   */
-  private tryFlush(): void {
-    // Keep extracting from the front of the buffer while a sentence/phrase boundary exists
-    let match: RegExpExecArray | null;
-    while ((match = SENTENCE_END_RE.exec(this.buffer)) !== null) {
-      const endIdx = match.index + match[0].length;
-      const sentence = this.buffer.slice(0, endIdx).trim();
-      this.buffer = this.buffer.slice(endIdx);
+  /** Force-flush any remaining content immediately (LLM stream complete). */
+  flush(): void {
+    this.clearTimer();
+    const remaining = this.buffer.trim();
+    this.buffer = '';
+    if (remaining.length > 0) this.emit(remaining);
+  }
 
-      if (sentence.length > 0) {
-        this.emit(sentence);
+  /** Discard all buffered content without emitting. */
+  reset(): void {
+    this.clearTimer();
+    this.buffer = '';
+    this.firstChunkPending = true;
+  }
+
+  // ── Internal ────────────────────────────────────────────────
+
+  private emit(sentence: string): void {
+    this.firstChunkPending = false;
+    this.onSentence(sentence);
+  }
+
+  private clearTimer(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+  }
+
+  /** Index just past the next usable boundary at or after `from`, or -1. */
+  private findBoundary(from: number): number {
+    const rest = this.buffer.slice(from);
+    const hard = HARD_END_RE.exec(rest);
+    let best = hard ? from + hard.index + hard[0].length : -1;
+
+    // A clause boundary only counts once the fragment it would END is long —
+    // a fast LLM delivers whole paragraphs at once, and splitting at every
+    // comma there makes the voice choppy ("They take carbon dioxide from the air,").
+    const soft = new RegExp(SOFT_END_RE.source, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = soft.exec(rest)) !== null) {
+      const end = from + m.index + m[0].length;
+      if (best >= 0 && end >= best) break;
+      if (this.buffer.slice(0, end).trim().length >= SOFT_SPLIT_CHARS) {
+        best = end;
+        break;
+      }
+    }
+    return best;
+  }
+
+  private tryFlush(): void {
+    // Emit every complete fragment that is long enough; short ones wait to
+    // merge with what follows (scan past their boundary).
+    let scanFrom = 0;
+    for (;;) {
+      const end = this.findBoundary(scanFrom);
+      if (end < 0) break;
+      const piece = this.buffer.slice(0, end).trim();
+      if (piece.length >= MIN_CHUNK_CHARS) {
+        this.buffer = this.buffer.slice(end);
+        scanFrom = 0;
+        this.clearTimer();
+        this.emit(piece);
+      } else {
+        scanFrom = end;
       }
     }
 
-    // If there's still content in the buffer and NO timer is running, start one.
-    // We DO NOT clear the timer on every token anymore, otherwise a fast LLM token flood
-    // without punctuation would wait indefinitely for the stream to end!
-    if (this.buffer.trim().length > 0 && !this.flushTimer) {
-      const timeout = this.firstChunkPending ? FIRST_FLUSH_TIMEOUT_MS : FLUSH_TIMEOUT_MS;
-      this.flushTimer = setTimeout(() => {
-        const remaining = this.buffer.trim();
-        if (remaining.length > 0) {
-          this.buffer = '';
-          this.emit(remaining);
-        }
-        this.flushTimer = null;
-      }, timeout);
+    // A run-on with no boundary: cut at the last space before the cap.
+    while (this.buffer.length > MAX_CHUNK_CHARS) {
+      const head = this.buffer.slice(0, MAX_CHUNK_CHARS);
+      const cut = head.lastIndexOf(' ');
+      const at = cut > MIN_CHUNK_CHARS ? cut : MAX_CHUNK_CHARS;
+      const piece = this.buffer.slice(0, at).trim();
+      this.buffer = this.buffer.slice(at);
+      this.clearTimer();
+      if (piece) this.emit(piece);
     }
+
+    // Time-based safety net, so a slow LLM never leaves speech waiting.
+    // The timer is NOT reset per token: a steady token flood without
+    // punctuation would otherwise wait for the stream to end.
+    if (this.buffer.trim().length > 0 && !this.flushTimer) this.armTimer();
   }
 
-  /**
-   * Force-flush any remaining content immediately.
-   * Call when the LLM stream signals completion.
-   */
-  flush(): void {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
+  private armTimer(): void {
+    const timeout = this.firstChunkPending ? this.firstFlushMs : this.flushMs;
+    this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
-    }
-    const remaining = this.buffer.trim();
-    this.buffer = '';
-    if (remaining.length > 0) {
+      const remaining = this.buffer.trim();
+      if (remaining.length === 0) return;
+      // A couple of words alone sound choppy — keep waiting; flush() at the
+      // end of the stream sends whatever is left.
+      if (remaining.length < MIN_CHUNK_CHARS) {
+        this.armTimer();
+        return;
+      }
+      this.buffer = '';
       this.emit(remaining);
-    }
-  }
-
-  /** Discard all buffered content without emitting. Used on barge-in. */
-  reset(): void {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
-    this.buffer = '';
-    this.firstChunkPending = true;
+    }, timeout);
   }
 }

@@ -1,4 +1,8 @@
-# Decisions Log — Vani Refinement Initiative
+# Decisions Log — Vani Refinement Initiative → GuruAI
+
+> **2026-11-06:** the project became **GuruAI** (multilingual voice study teacher on Gnani.ai).
+> ADRs G1–G8 below record that migration. They **supersede D1** (free/local ASR only) and
+> **D2** (Whisper as the final-STT engine). The design lives in `guruai-design.md`.
 
 > Architecture Decision Records (ADRs) for the three-feature refinement of Vani
 > (frontend rebuild, live STT processing, barge-in + persistent context).
@@ -372,6 +376,184 @@ level changes never re-render React.
   applied in both (`frameLevel` and the TTS branch) to keep the two speakers visually comparable.
 - If a future feature needs frequency-domain mic data (not just amplitude), an AnalyserNode would
   have to be reintroduced then — no current need.
+
+---
+
+## G1 — Prisma STT over the realtime WebSocket, frames streamed during speech ✅
+
+**Decision.** Use Gnani Prisma's realtime socket (`wss://api.vachana.ai/stt/v3/stream`) and stream
+each frame as it arrives. Send `{"type":"commit"}` on the client's `speech_end`. Supersedes D1/D2.
+
+**Why.** Transcription overlaps the student's speech, so the final arrives sooner than with a REST
+upload after speech. The client's 512-sample/1024-byte frames already match Gnani's required frame
+size exactly. Whisper and Vosk are English-only as configured; Prisma covers 10 Indian languages.
+
+**Consequences.** STT is now a paid cloud call and needs a network. `SessionContext.audioBuffer`
+is gone. Prisma has no interim results (see G4).
+
+## G2 — Client VAD stays authoritative; Gnani's VAD is set loose ✅
+
+**Decision.** Silero in the browser still decides when a turn ends. The Gnani socket is opened with
+`x-min-silence-ms: 2000` (the maximum), so its server VAD never splits a turn on its own.
+
+**Why.** It keeps the state machine and its tests unchanged. A student's mid-thought pause must not
+become two questions.
+
+**Consequences.** `gnaniStt.ts` must join the segments of one utterance on commit (see the design
+doc, §5.2). The browser's `redemptionFrames` rose from 4 to 12 (about 384 ms) for the same reason.
+
+## G3 — Timbre TTS over a persistent socket, serial queue, raw s16le 22050 Hz ✅
+
+**Decision.** Use one persistent `wss://api.vachana.ai/api/v1/tts` connection. One sentence is in
+flight at a time; the next is sent on `complete`. Audio is requested as `container: raw`,
+`encoding: pcm_s16le`, `sample_rate: 22050`.
+
+**Why.** The docs allow one request per connection at a time. Timbre returns audio faster than real
+time, so a serial queue still keeps playback fed. At 22050 Hz raw PCM, the browser player and the
+`[0xAF][0xFE][seq]` framing are byte-identical to the Piper era.
+
+**Consequences.** The sentence buffer was retuned to whole sentences (each fragment is a network round
+trip). Payloads are kept even-length. Cancelling means closing the socket.
+
+## G4 — Keep Vosk for display-only live captions, with a model per language ✅
+
+**Decision.** Vosk stays, display-only, with its model chosen per language through
+`VOSK_MODEL_PATH_<ID>`. A language without a model has no live captions; the Prisma final still shows.
+
+**Why.** It's the user's decision: Prisma has no interim transcripts, and the user wants the student's
+words shown live.
+
+**Consequences.** Python is still needed (just `vosk`). Caption coverage depends on which small
+Vosk models exist.
+
+## G5 — Default to prisma-v3.0 and timbre-v3.0, overridable through env ✅
+
+**Why.** Prisma v3.0 adds `codemix` (Hinglish), `indic-auto` and `keyterms`. All 13 Timbre v3.0
+voices speak all 10 languages, so one `GNANI_TTS_VOICE` works for every language.
+
+## G6 — Language is a session preference, changeable between turns ✅
+
+**Decision.** `session_init.preferences {language, grade, board}`. `update_preferences` is accepted
+only in IDLE. A change rebuilds the system prompt, reconnects STT (its headers are fixed per
+connection), changes the TTS language, and restarts Vosk with the matching model.
+
+## G7 — Remove Faster-Whisper and Piper ✅
+
+**Decision.** Delete `faster_whisper_server.py`, `whisperProcess.ts` and `piperProcess.ts`. Piper's
+framing code moved into `ttsFraming.ts`. Git history keeps the rest.
+
+**Why.** It's the user's decision. Keeping two speech stacks would double the testing surface for
+an English-only fallback.
+
+## G8 — Notes PDF uses headless Chromium (Playwright) with bundled Noto fonts ⏸ (Phase 3)
+
+**Why.** Indic scripts need complex text shaping (conjuncts, matras). Only a browser engine renders
+it correctly; pdfkit and jsPDF break Devanagari and Tamil. It's the user's decision over
+browser print-to-PDF, because the file gets saved on the server and is ready to download.
+
+---
+
+## G9 — One STT locale per streaming connection; REST retry as the safety net ✅ (2026-11-06)
+
+**Decision.** Streaming sends exactly one `language_code`, with Hinglish as `hi-IN` + `codemix`. If an
+utterance fails on the socket (error, timeout, disconnect, rejected configuration, or empty despite at
+least 0.4 s of speech), its audio is retried once through `POST /stt/v3`. A 1008 rejection stops
+reconnects until the configuration changes. A backlog is paced out at about 2× real time.
+
+**Why.** The live API contradicted the docs on locale lists. Bursting degrades Gnani's VAD (their docs),
+and it caused an empty first utterance. One retry turns most failures into a slower answer instead of
+an error.
+
+**Consequences.** Up to 30 s of the utterance's audio stays in memory until the final arrives; it is
+never written to disk. A retried turn costs a second request and adds an upload round trip.
+
+## G10 — Sessions are first-class and bound to one language ✅ (2026-11-06)
+
+**Decision.** *(Grouping revised by G12.)* A study session (id, title, language, voice, class, board, summary) is stored in
+SQLite. A new language means a new session. A saved session can be resumed, which restores its own
+language, voice and context. Sessions are grouped by language in the UI. Switching happens in-band
+(`switch_session`) on the same connection. LLM context and summaries are per session, replacing the
+global "last N turns + one summary".
+
+**Why.** User request: "when user selects language… generate a new session… group that sessions and
+save the history… so that user can come back directly and start talking." The global context was also
+mixing languages and topics across conversations.
+
+**Consequences.** The old global `summary` table is no longer read. Old turns are backfilled into
+English sessions, one per past connection.
+
+## G11 — Voice is a per-session choice, previewed before choosing ✅ (2026-11-06)
+
+**Decision.** Students choose among the configured model's Timbre voices. Each voice card plays a
+sample from `GET /api/voice-preview` (Timbre REST, cached). The voice's gender (from Gnani's
+catalog) tells the LLM which grammatical forms to use for itself.
+
+**Why.** User request. Previewing over HTTP works before any session exists and never interleaves
+with lesson audio on the TTS socket.
+
+---
+
+## G12 — Student-made groups and content-generated titles (revises G10) ✅ (2026-11-06)
+
+**Decision.** Sessions are listed individually, not grouped by language. Students create their own
+groups, start sessions inside them, and move, rename or delete sessions and groups. Titles are
+generated by the LLM from the session's content (3–5 words, in the session's language) after the
+first answer and refined at 6 and 12 turns. A title the student types is never overwritten.
+
+**Why.** User feedback: "I don't want sessions to be distributed with languages… I can also create
+group and inside that group I can create sessions… the session's name should not be my first query."
+First questions are often small talk ("can you hear me?").
+
+**Consequences.** One background LLM call per title (about 3 per session at most). Sessions saved
+earlier are re-titled once at startup.
+
+## G13 — The client mic stays closed for the server's whole speech output ✅ (2026-11-06)
+
+**Decision.** The server reports `tts_state {active}` from the first queued sentence until its TTS queue
+drains or is cancelled. The client gates the mic on it in addition to its playback clock. A gate that
+closes mid-utterance cancels the utterance (`vad_misfire`). A Timbre request times out after 12 s of
+inactivity rather than after a fixed total.
+
+**Why.** The playback clock cannot see the 350–550 ms gaps between sentences. In those gaps the mic
+heard GuruAI's own voice and produced empty transcripts. A total cap cut off long sentences.
+
+---
+
+## G14 — Lesson planning and memory happen in the background, one JSON call per exchange ✅ (2026-11-06)
+
+**Decision.** The answer path stays a single streamed LLM call, prompted with the teaching method and
+the current memory. After each answer, a background job makes one JSON-mode LLM call. It updates the
+session memory (topic, gist, lesson plan with chunk status, student state, last offer) and extracts
+profile facts. The system prompt is rebuilt from the DB before every answer, and opening or resuming a
+session loads that session's memory. This replaces the every-6-turns summary, which only reached the
+prompt when a session opened.
+
+**Why.** Planning chunks before answering would add a second LLM round trip to every turn. Doing it
+between turns costs no latency, because the student takes seconds to reply. One combined call is
+cheaper than separate summary, plan and extraction calls.
+
+**Consequences.** The first answer on a new topic has no plan yet; the method says to start with the
+most basic chunk. Model output is never trusted: normalisers validate it, and the previous memory is
+kept on failure.
+
+## G15 — A global learner profile with strict, student-controlled rules ✅ (2026-11-06)
+
+**Decision.** Facts about the student persist across sessions in `learner_profile`. Allowed keys only;
+only what the student said about themselves; sensitive categories are refused by both the prompt and
+a server-side filter. The student can see and delete everything ("About you") and switch memory off.
+
+**Why.** User request ("a context available globally… which contains user personal information").
+Personal analogies ("you like cricket…") and a correct level make explanations land. Storing
+personal data about students, often minors, needs visible control and conservative limits.
+
+## G16 — GuruAI speaks first; opener replies are not stored ✅ (2026-11-06)
+
+**Decision.** Each opened session triggers an opener turn through the state machine (`session_opener`).
+New sessions get a greeting and "what shall we learn?". Resumed sessions get a welcome back, a recap and
+an offer to continue the next chunk. The instruction is ephemeral, and the reply is not stored.
+
+**Why.** "It should be really communicating." Not storing the replies keeps transcripts, titles and
+memory about the lesson itself.
 
 ---
 

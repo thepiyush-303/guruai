@@ -1,31 +1,63 @@
 // ============================================================
-// HistorySidebar — the durable transcript, both sides, across sessions.
-//
-// One running conversation, oldest first: user and assistant turns as they were
-// said, with a thin divider wherever one session ends and the next begins. The
-// turns are loaded from the server on connect (SQLite-backed) and appended to as
-// this session goes. Slides in from the left — the log lives on the right — and
-// closes on Escape.
+// HistorySidebar — sessions, in two views:
+//   · This session — the transcript of the session you are in (saved, so a
+//     resumed session shows everything said before).
+//   · All sessions — every saved session, in the student's own groups; click
+//     one to continue it, start new ones, organise them.
+//   · About you — what GuruAI remembers about the student, and controls.
+// Slides in from the left — the log lives on the right — and closes on Escape.
 // ============================================================
 
-import { Fragment, useEffect, useRef } from 'react';
-import type { PersistedTurn } from '../protocol.ts';
+import { useEffect, useRef, useState } from 'react';
+import type { LessonView, PersistedTurn, SessionGroup, SessionSummary } from '../protocol.ts';
+import { LessonProgress } from './LessonProgress.tsx';
+import { ProfilePanel } from './ProfilePanel.tsx';
+import type { SessionActions } from './SessionList.tsx';
+import { SessionsPanel, type GroupActions } from './SessionsPanel.tsx';
+
+type Tab = 'transcript' | 'sessions' | 'profile';
 
 interface Props {
   turns: PersistedTurn[];
   open: boolean;
   onClose: () => void;
+  title: string | null;
+  lesson: LessonView | null;
+  sessions: SessionSummary[];
+  groups: SessionGroup[];
+  currentId: string;
+  onOpenSession: (session: SessionSummary) => void;
+  onNewSession: (groupId: string | null) => void;
+  sessionActions: SessionActions;
+  groupActions: GroupActions;
+  /** Switching sessions is only possible between answers. */
+  canSwitch: boolean;
 }
 
-export function HistorySidebar({ turns, open, onClose }: Props) {
+export function HistorySidebar({
+  turns,
+  open,
+  onClose,
+  title,
+  lesson,
+  sessions,
+  groups,
+  currentId,
+  onOpenSession,
+  onNewSession,
+  sessionActions,
+  groupActions,
+  canSwitch,
+}: Props) {
+  const [tab, setTab] = useState<Tab>('transcript');
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Follow the tail while open — the newest turn is what you came back for.
   useEffect(() => {
-    if (!open) return;
+    if (!open || tab !== 'transcript') return;
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [open, turns]);
+  }, [open, turns, tab]);
 
   useEffect(() => {
     if (!open) return;
@@ -36,33 +68,78 @@ export function HistorySidebar({ turns, open, onClose }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  const focusable = open ? 0 : -1;
+
   return (
-    <aside className={open ? 'history is-open' : 'history'} role="complementary" aria-label="Conversation history" aria-hidden={!open}>
+    <aside className={open ? 'history is-open' : 'history'} role="complementary" aria-label="Sessions" aria-hidden={!open}>
       <header className="history__head">
-        <span className="history__title">History</span>
-        <button className="history__close" onClick={onClose} aria-label="Close history" tabIndex={open ? 0 : -1}>
+        <div className="history__tabs" role="tablist">
+          <button
+            role="tab"
+            aria-selected={tab === 'transcript'}
+            className={tab === 'transcript' ? 'history__tab is-active' : 'history__tab'}
+            onClick={() => setTab('transcript')}
+            tabIndex={focusable}
+          >
+            This session
+          </button>
+          <button
+            role="tab"
+            aria-selected={tab === 'sessions'}
+            className={tab === 'sessions' ? 'history__tab is-active' : 'history__tab'}
+            onClick={() => setTab('sessions')}
+            tabIndex={focusable}
+          >
+            All sessions
+          </button>
+          <button
+            role="tab"
+            aria-selected={tab === 'profile'}
+            className={tab === 'profile' ? 'history__tab is-active' : 'history__tab'}
+            onClick={() => setTab('profile')}
+            tabIndex={focusable}
+          >
+            About you
+          </button>
+        </div>
+        <button className="history__close" onClick={onClose} aria-label="Close sessions" tabIndex={focusable}>
           ×
         </button>
       </header>
-      <div className="history__scroll" ref={scrollRef}>
-        {turns.length === 0 ? (
-          <p className="history__empty">No conversations yet. Everything you say and hear lands here.</p>
-        ) : (
-          turns.map((turn, i) => {
-            // A new session_id after the previous turn means a session boundary.
-            const boundary = i > 0 && turns[i - 1].session_id !== turn.session_id;
-            return (
-              <Fragment key={i}>
-                {boundary && <div className="history__break" role="separator" aria-label="New session" />}
-                <div className={`turn turn--${turn.role}`}>
-                  <span className="turn__who">{turn.role === 'user' ? 'You' : 'Vani'}</span>
-                  <p className="turn__text">{turn.content}</p>
-                </div>
-              </Fragment>
-            );
-          })
-        )}
-      </div>
+
+      {tab === 'transcript' ? (
+        <div className="history__scroll" ref={scrollRef}>
+          {title && <p className="history__session-title">{title}</p>}
+          <LessonProgress view={lesson} />
+          {turns.length === 0 ? (
+            <p className="history__empty">Nothing said yet in this session. Ask your first question.</p>
+          ) : (
+            turns.map((turn, i) => (
+              <div className={`turn turn--${turn.role}`} key={i}>
+                <span className="turn__who">{turn.role === 'user' ? 'You' : 'GuruAI'}</span>
+                <p className="turn__text">{turn.content}</p>
+              </div>
+            ))
+          )}
+        </div>
+      ) : tab === 'profile' ? (
+        <div className="history__scroll">
+          <ProfilePanel open={open && tab === 'profile'} />
+        </div>
+      ) : (
+        <div className="history__scroll">
+          <SessionsPanel
+            groups={groups}
+            sessions={sessions}
+            currentId={currentId}
+            onOpen={onOpenSession}
+            onNew={onNewSession}
+            sessionActions={sessionActions}
+            groupActions={groupActions}
+            canSwitch={canSwitch}
+          />
+        </div>
+      )}
     </aside>
   );
 }

@@ -1,17 +1,16 @@
-# vocab.txt — domain vocabulary for Whisper biasing
+# vocab.txt — subject vocabulary for Gnani Prisma STT biasing
 #
-# One term per line. Blank lines and # comments are ignored.
-# These terms are passed to Whisper as an initial_prompt so uncommon names and
-# jargon are spelled correctly instead of being guessed phonetically.
+# One term per line. Blank lines and # comments are ignored. Terms are sent to
+# Prisma as `keyterms` (prisma-v3.0) or `bias_list` (prisma-v2.5) so names and
+# jargon are recognised instead of guessed phonetically.
 #
-# Keep this list short (roughly 30 terms or fewer). A long prompt slows decoding
-# and makes Whisper more likely to echo the glossary back on near-silent audio.
+# Keep it short (50 terms max are sent) and ASCII-only — the list travels in an
+# HTTP header, so non-Latin terms are skipped.
 #
 # Also settable via the VANI_VOCAB env var (comma-separated); the two are merged.
 
-Vani
-Solari
-Todoist
-Groq
-Piper
-Vosk
+GuruAI
+NCERT
+CBSE
+ICSE
+photosynthesis

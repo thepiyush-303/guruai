@@ -42,6 +42,48 @@ export interface PersistedSummary {
   covers_up_to_turn: number;
 }
 
+/** One study session: a conversation in one language, resumable later. */
+export interface SessionRecord {
+  id: string;
+  /** Generated from the conversation ('auto') or typed by the student ('user'). */
+  title: string | null;
+  title_source: 'auto' | 'user' | null;
+  group_id: string | null;
+  language: string;
+  voice: string | null;
+  grade: string | null;
+  board: string | null;
+  created_ts: number;
+  updated_ts: number;
+}
+
+export interface SessionListItem extends SessionRecord {
+  turn_count: number;
+  /** The most recent line said in the session, for the list preview. */
+  last_text: string | null;
+}
+
+/** A student-made folder of sessions. */
+export interface SessionGroup {
+  id: string;
+  name: string;
+  created_ts: number;
+  updated_ts: number;
+}
+
+export interface SessionMeta {
+  id: string;
+  /** Only applied when the session row is first created. */
+  groupId?: string | null;
+  language: string;
+  voice?: string;
+  grade?: string;
+  board?: string;
+}
+
+const TITLE_MAX = 80;
+const GROUP_NAME_MAX = 60;
+
 // ── Singleton state ───────────────────────────────────────────
 let db: SqliteDb | null = null;
 let enabled = false;
@@ -87,7 +129,59 @@ export function initContextStore(dbPath = process.env.VANI_DB_PATH ?? 'data/vani
       CREATE TABLE IF NOT EXISTS meta (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        id            TEXT    PRIMARY KEY,
+        title         TEXT,
+        language      TEXT    NOT NULL,
+        voice         TEXT,
+        grade         TEXT,
+        board         TEXT,
+        summary       TEXT,
+        summary_upto  INTEGER NOT NULL DEFAULT 0,
+        created_ts    INTEGER NOT NULL,
+        updated_ts    INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS turns_by_session ON turns (session_id, id);`
+    );
+    // Columns added after the sessions table first shipped.
+    const cols = new Set((db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>).map((c) => c.name));
+    if (!cols.has('group_id')) db.exec('ALTER TABLE sessions ADD COLUMN group_id TEXT');
+    if (!cols.has('title_source')) db.exec('ALTER TABLE sessions ADD COLUMN title_source TEXT');
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS session_groups (
+        id          TEXT    PRIMARY KEY,
+        name        TEXT    NOT NULL,
+        created_ts  INTEGER NOT NULL,
+        updated_ts  INTEGER NOT NULL
       );`
+    );
+    // Phase 2 memory: structured per-session context and the global learner profile.
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS session_context (
+        session_id    TEXT    PRIMARY KEY,
+        data          TEXT    NOT NULL,
+        upto_turn_id  INTEGER NOT NULL DEFAULT 0,
+        updated_ts    INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS learner_profile (
+        key                TEXT    PRIMARY KEY,
+        value              TEXT    NOT NULL,
+        updated_ts         INTEGER NOT NULL,
+        source_session_id  TEXT
+      );`
+    );
+    // Earlier rolling summaries become the gist of the structured session memory.
+    db.exec(
+      `INSERT OR IGNORE INTO session_context (session_id, data, upto_turn_id, updated_ts)
+       SELECT id, json_object('gist', summary), summary_upto, updated_ts
+         FROM sessions WHERE summary IS NOT NULL AND summary <> '';`
+    );
+    // Backfill: turns recorded before sessions existed get a session row each
+    // (one per old connection). Untitled — the titler names them from content.
+    db.exec(
+      `INSERT OR IGNORE INTO sessions (id, language, created_ts, updated_ts)
+       SELECT session_id, 'en', MIN(ts), MAX(ts) FROM turns GROUP BY session_id;`
     );
     enabled = true;
     console.log(`[context] transcript store ready at ${dbPath}`);
@@ -144,66 +238,387 @@ export function loadRecentTurns(limit = HISTORY_LOAD_LIMIT): PersistedTurn[] {
   }
 }
 
+// ── Sessions ──────────────────────────────────────────────────
+
 /**
- * Returns the current rolling summary if one exists.
+ * Create the session row if needed and record its current settings. Called when
+ * the first turn of a session is stored (so sessions nobody spoke in are not
+ * kept) and whenever its voice/class/board change.
  */
-export function getSummary(): PersistedSummary | null {
+export function upsertSession(meta: SessionMeta): void {
+  if (!enabled || !db) return;
+  const now = Date.now();
+  try {
+    db.prepare(
+      `INSERT INTO sessions (id, group_id, language, voice, grade, board, created_ts, updated_ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         language = excluded.language, voice = excluded.voice,
+         grade = excluded.grade, board = excluded.board, updated_ts = excluded.updated_ts`,
+    ).run(
+      meta.id,
+      meta.groupId && getGroup(meta.groupId) ? meta.groupId : null,
+      meta.language, meta.voice ?? null, meta.grade ?? null, meta.board ?? null, now, now,
+    );
+  } catch (err) {
+    console.error('[context] failed to upsert session:', err);
+  }
+}
+
+/** Mark activity. */
+export function touchSession(id: string): void {
+  if (!enabled || !db) return;
+  try {
+    db.prepare('UPDATE sessions SET updated_ts = ? WHERE id = ?').run(Date.now(), id);
+  } catch (err) {
+    console.error('[context] failed to touch session:', err);
+  }
+}
+
+/**
+ * Set a session's title. An 'auto' title never replaces one the student typed.
+ * Returns whether the title changed.
+ */
+export function setSessionTitle(id: string, title: string, source: 'auto' | 'user'): boolean {
+  if (!enabled || !db) return false;
+  const clean = title.replace(/\s+/g, ' ').trim().slice(0, TITLE_MAX);
+  if (!clean) return false;
+  try {
+    const guard = source === 'auto' ? " AND COALESCE(title_source, '') <> 'user'" : '';
+    const r = db.prepare(`UPDATE sessions SET title = ?, title_source = ? WHERE id = ?${guard}`).run(clean, source, id) as { changes: number };
+    return r.changes > 0;
+  } catch (err) {
+    console.error('[context] failed to set session title:', err);
+    return false;
+  }
+}
+
+/** Number of stored turns in a session. */
+export function countSessionTurns(id: string): number {
+  if (!enabled || !db) return 0;
+  try {
+    return (db.prepare('SELECT COUNT(*) AS n FROM turns WHERE session_id = ?').get(id) as { n: number }).n;
+  } catch {
+    return 0;
+  }
+}
+
+/** Sessions that have been spoken in but never titled from their content. */
+export function sessionsNeedingTitle(limit = 30): string[] {
+  if (!enabled || !db) return [];
+  try {
+    return (
+      db
+        .prepare(
+          `SELECT s.id FROM sessions s
+            WHERE s.title_source IS NULL
+              AND (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id) >= 2
+            ORDER BY s.updated_ts DESC LIMIT ?`,
+        )
+        .all(limit) as Array<{ id: string }>
+    ).map((r) => r.id);
+  } catch (err) {
+    console.error('[context] failed to find untitled sessions:', err);
+    return [];
+  }
+}
+
+/** Put a session in a group, or take it out (null). False if either does not exist. */
+export function moveSession(id: string, groupId: string | null): boolean {
+  if (!enabled || !db) return false;
+  if (groupId !== null && !getGroup(groupId)) return false;
+  try {
+    const r = db.prepare('UPDATE sessions SET group_id = ? WHERE id = ?').run(groupId, id) as { changes: number };
+    return r.changes > 0;
+  } catch (err) {
+    console.error('[context] failed to move session:', err);
+    return false;
+  }
+}
+
+/** Delete a session and everything said in it. */
+export function deleteSession(id: string): boolean {
+  if (!enabled || !db) return false;
+  try {
+    db.prepare('DELETE FROM turns WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM session_context WHERE session_id = ?').run(id);
+    const r = db.prepare('DELETE FROM sessions WHERE id = ?').run(id) as { changes: number };
+    return r.changes > 0;
+  } catch (err) {
+    console.error('[context] failed to delete session:', err);
+    return false;
+  }
+}
+
+// ── Groups ────────────────────────────────────────────────────
+
+export function listGroups(): SessionGroup[] {
+  if (!enabled || !db) return [];
+  try {
+    return db.prepare('SELECT id, name, created_ts, updated_ts FROM session_groups ORDER BY name COLLATE NOCASE').all() as SessionGroup[];
+  } catch (err) {
+    console.error('[context] failed to list groups:', err);
+    return [];
+  }
+}
+
+export function getGroup(id: string): SessionGroup | null {
   if (!enabled || !db) return null;
   try {
-    const row = db.prepare('SELECT text, covers_up_to_turn FROM summary WHERE id = 1').get() as PersistedSummary | undefined;
-    return row ?? null;
-  } catch (err) {
-    console.error('[context] failed to get summary:', err);
+    return (db.prepare('SELECT id, name, created_ts, updated_ts FROM session_groups WHERE id = ?').get(id) as SessionGroup | undefined) ?? null;
+  } catch {
     return null;
   }
 }
 
-/**
- * Upserts the rolling summary.
- */
-export function updateSummary(text: string, coversUpToTurn: number): void {
-  if (!enabled || !db) return;
+export function createGroup(id: string, name: string): SessionGroup | null {
+  if (!enabled || !db) return null;
+  const clean = name.replace(/\s+/g, ' ').trim().slice(0, GROUP_NAME_MAX);
+  if (!clean) return null;
+  const now = Date.now();
   try {
-    db.prepare(`
-      INSERT INTO summary (id, text, updated_ts, covers_up_to_turn) 
-      VALUES (1, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET 
-        text = excluded.text, 
-        updated_ts = excluded.updated_ts, 
-        covers_up_to_turn = excluded.covers_up_to_turn
-    `).run(text, Date.now(), coversUpToTurn);
+    db.prepare('INSERT INTO session_groups (id, name, created_ts, updated_ts) VALUES (?, ?, ?, ?)').run(id, clean, now, now);
+    return { id, name: clean, created_ts: now, updated_ts: now };
   } catch (err) {
-    console.error('[context] failed to update summary:', err);
+    console.error('[context] failed to create group:', err);
+    return null;
   }
 }
 
-/**
- * Gets turns that occur strictly after \`afterTurnId\`.
- */
-export function getUnsummarizedTurns(afterTurnId: number, limit = 50): PersistedTurn[] {
+export function renameGroup(id: string, name: string): boolean {
+  if (!enabled || !db) return false;
+  const clean = name.replace(/\s+/g, ' ').trim().slice(0, GROUP_NAME_MAX);
+  if (!clean) return false;
+  try {
+    const r = db.prepare('UPDATE session_groups SET name = ?, updated_ts = ? WHERE id = ?').run(clean, Date.now(), id) as { changes: number };
+    return r.changes > 0;
+  } catch (err) {
+    console.error('[context] failed to rename group:', err);
+    return false;
+  }
+}
+
+/** Delete a group. Its sessions are kept and become ungrouped. */
+export function deleteGroup(id: string): boolean {
+  if (!enabled || !db) return false;
+  try {
+    db.prepare('UPDATE sessions SET group_id = NULL WHERE group_id = ?').run(id);
+    const r = db.prepare('DELETE FROM session_groups WHERE id = ?').run(id) as { changes: number };
+    return r.changes > 0;
+  } catch (err) {
+    console.error('[context] failed to delete group:', err);
+    return false;
+  }
+}
+
+export function getSession(id: string): SessionRecord | null {
+  if (!enabled || !db) return null;
+  try {
+    const row = db
+      .prepare('SELECT id, title, title_source, group_id, language, voice, grade, board, created_ts, updated_ts FROM sessions WHERE id = ?')
+      .get(id) as SessionRecord | undefined;
+    return row ?? null;
+  } catch (err) {
+    console.error('[context] failed to get session:', err);
+    return null;
+  }
+}
+
+/** Sessions with at least one turn, most recently active first. */
+export function listSessions(limit = 200): SessionListItem[] {
+  if (!enabled || !db) return [];
+  try {
+    return db
+      .prepare(
+        `SELECT s.id, s.title, s.title_source, s.group_id, s.language, s.voice, s.grade, s.board, s.created_ts, s.updated_ts,
+                (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id) AS turn_count,
+                (SELECT substr(content, 1, 140) FROM turns t WHERE t.session_id = s.id ORDER BY t.id DESC LIMIT 1) AS last_text
+           FROM sessions s
+          WHERE EXISTS (SELECT 1 FROM turns t WHERE t.session_id = s.id)
+          ORDER BY s.updated_ts DESC
+          LIMIT ?`,
+      )
+      .all(limit) as SessionListItem[];
+  } catch (err) {
+    console.error('[context] failed to list sessions:', err);
+    return [];
+  }
+}
+
+/** The latest `limit` turns of one session, oldest first. */
+export function loadSessionTurns(sessionId: string, limit = HISTORY_LOAD_LIMIT): PersistedTurn[] {
   if (!enabled || !db) return [];
   try {
     const rows = db
-      .prepare('SELECT id, session_id, role, content, ts FROM turns WHERE id > ? ORDER BY id ASC LIMIT ?')
-      .all(afterTurnId, limit) as PersistedTurn[];
-    return rows;
+      .prepare('SELECT id, session_id, role, content, ts FROM turns WHERE session_id = ? ORDER BY id DESC LIMIT ?')
+      .all(sessionId, limit) as PersistedTurn[];
+    return rows.reverse();
+  } catch (err) {
+    console.error('[context] failed to load session turns:', err);
+    return [];
+  }
+}
+
+// ── Per-session rolling summary ───────────────────────────────
+
+export function getSessionSummary(sessionId: string): PersistedSummary | null {
+  if (!enabled || !db) return null;
+  try {
+    const row = db
+      .prepare('SELECT summary AS text, summary_upto AS covers_up_to_turn FROM sessions WHERE id = ?')
+      .get(sessionId) as { text: string | null; covers_up_to_turn: number } | undefined;
+    return row && row.text ? { text: row.text, covers_up_to_turn: row.covers_up_to_turn } : null;
+  } catch (err) {
+    console.error('[context] failed to get session summary:', err);
+    return null;
+  }
+}
+
+export function updateSessionSummary(sessionId: string, text: string, coversUpToTurn: number): void {
+  if (!enabled || !db) return;
+  try {
+    db.prepare('UPDATE sessions SET summary = ?, summary_upto = ? WHERE id = ?').run(text, coversUpToTurn, sessionId);
+  } catch (err) {
+    console.error('[context] failed to update session summary:', err);
+  }
+}
+
+/** Turns of a session with id > afterTurnId, oldest first. */
+export function getUnsummarizedSessionTurns(sessionId: string, afterTurnId: number, limit = 50): PersistedTurn[] {
+  if (!enabled || !db) return [];
+  try {
+    return db
+      .prepare('SELECT id, session_id, role, content, ts FROM turns WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?')
+      .all(sessionId, afterTurnId, limit) as PersistedTurn[];
   } catch (err) {
     console.error('[context] failed to get unsummarized turns:', err);
     return [];
   }
 }
 
-/**
- * Gets the maximum turn ID in the db, used to check if summarizer needs to run.
- * Returns the highest autoincrement `id`, not a count — safe even if rows are deleted.
- */
-export function getMaxTurnId(): number {
-  if (!enabled || !db) return 0;
+// ── Structured session memory (JSON; validated in memory/sessionMemory.ts) ──
+
+export interface SessionContextRow {
+  data: string;
+  upto_turn_id: number;
+  updated_ts: number;
+}
+
+export function getSessionContextRow(sessionId: string): SessionContextRow | null {
+  if (!enabled || !db) return null;
   try {
-    const row = db.prepare('SELECT COALESCE(MAX(id), 0) as maxId FROM turns').get() as { maxId: number };
-    return row.maxId ?? 0;
+    return (
+      (db
+        .prepare('SELECT data, upto_turn_id, updated_ts FROM session_context WHERE session_id = ?')
+        .get(sessionId) as SessionContextRow | undefined) ?? null
+    );
   } catch (err) {
-    console.error('[context] failed to get max turn id:', err);
-    return 0;
+    console.error('[context] failed to read session context:', err);
+    return null;
+  }
+}
+
+export function saveSessionContextRow(sessionId: string, data: string, uptoTurnId: number): void {
+  if (!enabled || !db) return;
+  try {
+    db.prepare(
+      `INSERT INTO session_context (session_id, data, upto_turn_id, updated_ts) VALUES (?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET data = excluded.data, upto_turn_id = excluded.upto_turn_id, updated_ts = excluded.updated_ts`,
+    ).run(sessionId, data, uptoTurnId, Date.now());
+  } catch (err) {
+    console.error('[context] failed to save session context:', err);
+  }
+}
+
+/** Turns of a session with id > afterTurnId, oldest first. */
+export function getSessionTurnsAfter(sessionId: string, afterTurnId: number, limit = 50): PersistedTurn[] {
+  return getUnsummarizedSessionTurns(sessionId, afterTurnId, limit);
+}
+
+/** The most recently active other sessions, for "earlier sessions" context. */
+export function recentOtherSessions(excludeId: string, limit = 5): Array<{ id: string; title: string; language: string }> {
+  if (!enabled || !db) return [];
+  try {
+    return db
+      .prepare(
+        `SELECT id, title, language FROM sessions
+          WHERE id <> ? AND title IS NOT NULL AND title <> ''
+          ORDER BY updated_ts DESC LIMIT ?`,
+      )
+      .all(excludeId, limit) as Array<{ id: string; title: string; language: string }>;
+  } catch (err) {
+    console.error('[context] failed to list recent sessions:', err);
+    return [];
+  }
+}
+
+// ── Global learner profile (validated in memory/learnerProfile.ts) ──
+
+export interface ProfileRow {
+  key: string;
+  value: string;
+  updated_ts: number;
+  source_session_id: string | null;
+}
+
+export function listProfileRows(): ProfileRow[] {
+  if (!enabled || !db) return [];
+  try {
+    return db.prepare('SELECT key, value, updated_ts, source_session_id FROM learner_profile ORDER BY key').all() as ProfileRow[];
+  } catch (err) {
+    console.error('[context] failed to read learner profile:', err);
+    return [];
+  }
+}
+
+export function upsertProfileRow(key: string, value: string, sessionId: string | null): void {
+  if (!enabled || !db) return;
+  try {
+    db.prepare(
+      `INSERT INTO learner_profile (key, value, updated_ts, source_session_id) VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_ts = excluded.updated_ts,
+         source_session_id = excluded.source_session_id`,
+    ).run(key, value, Date.now(), sessionId);
+  } catch (err) {
+    console.error('[context] failed to save profile fact:', err);
+  }
+}
+
+export function deleteProfileRow(key: string): boolean {
+  if (!enabled || !db) return false;
+  try {
+    return (db.prepare('DELETE FROM learner_profile WHERE key = ?').run(key) as { changes: number }).changes > 0;
+  } catch (err) {
+    console.error('[context] failed to delete profile fact:', err);
+    return false;
+  }
+}
+
+export function clearProfile(): void {
+  if (!enabled || !db) return;
+  try {
+    db.exec('DELETE FROM learner_profile');
+  } catch (err) {
+    console.error('[context] failed to clear profile:', err);
+  }
+}
+
+// ── Settings (meta table) ─────────────────────────────────────
+
+export function getMeta(key: string): string | null {
+  if (!enabled || !db) return null;
+  try {
+    return (db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function setMeta(key: string, value: string): void {
+  if (!enabled || !db) return;
+  try {
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  } catch (err) {
+    console.error('[context] failed to save setting:', err);
   }
 }

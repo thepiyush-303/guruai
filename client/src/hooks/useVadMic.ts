@@ -15,6 +15,11 @@ import { useEffect, useRef } from 'react';
 import { FRAME_SIZE, type ClientMessage, type LogKind } from '../protocol.ts';
 import type { MicVadInstance, VadProbabilities } from '../vad.d.ts';
 
+// Silence (in 32ms frames) before a turn ends. 12 ≈ 384ms: a student thinking
+// mid-sentence ("Newton's first law is… um… inertia") should not be cut off.
+// The prototype used 4 (128ms), tuned for snappy one-line assistant chat.
+const REDEMPTION_FRAMES = 12;
+
 // PRD §2.2 Silero parameters, as tuned in the prototype.
 const VAD_CONFIG = {
   frameSamples: FRAME_SIZE, // 512 samples = 32ms @ 16kHz
@@ -22,7 +27,7 @@ const VAD_CONFIG = {
   negativeSpeechThreshold: 0.35, // silence threshold; low enough not to clip soft trailing speech
   minSpeechFrames: 6, // ~192ms of sustained speech before a turn starts
   preSpeechPadFrames: 5,
-  redemptionFrames: 4, // 128ms of silence before speech_end
+  redemptionFrames: REDEMPTION_FRAMES,
 };
 
 // The worklet and the Silero weights are fetched from here. This is the
@@ -140,6 +145,14 @@ export function useVadMic({ active, gatedRef, sessionIdRef, sendJson, sendPcm, l
           onFrameProcessed: (_probabilities: VadProbabilities, frame: Float32Array) => {
             if (gatedRef.current) {
               micLevelRef.current = 0;
+              // The gate closed mid-utterance (the assistant started speaking).
+              // Its speech_end would be swallowed below and leave the server
+              // waiting in LISTENING, so cancel the utterance now.
+              if (speaking) {
+                speaking = false;
+                preBuffer = [];
+                sendJson({ type: 'vad_misfire', session_id: sessionIdRef.current, timestamp_ms: Date.now() });
+              }
               return;
             }
             micLevelRef.current = frameLevel(frame);

@@ -6,7 +6,7 @@
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { SAMPLE_RATE, type ClientMessage, type Connection, type ServerMessage } from '../protocol.ts';
+import { SAMPLE_RATE, type ClientMessage, type Connection, type Preferences, type ServerMessage } from '../protocol.ts';
 
 // The WS port is fixed by the server (PORT, default 8765). The host is taken
 // from the page so this works both from the Vite dev server and from the Node
@@ -57,10 +57,15 @@ export function useWsClient(opts: Options) {
     optsRef.current.onClosed();
   }, []);
 
-  const connect = useCallback(() => {
+  /**
+   * Open the socket. `preferences` travel in session_init. With `resume`, the
+   * server continues the saved session `sessionId` (its language and history).
+   */
+  const connect = useCallback((preferences: Preferences, opts: { sessionId?: string; resume?: boolean; groupId?: string | null } = {}) => {
     if (wsRef.current) return;
 
-    const sessionId = crypto.randomUUID();
+    const sessionId = opts.sessionId ?? crypto.randomUUID();
+    const resume = opts.resume === true;
     sessionIdRef.current = sessionId;
     setConnection('connecting');
     optsRef.current.log(`connecting to ${WS_URL}`, 'sys');
@@ -88,6 +93,9 @@ export function useWsClient(opts: Options) {
             vad_library: 'silero-v5',
             browser: navigator.userAgent.slice(0, 60),
           },
+          preferences,
+          resume,
+          group_id: opts.groupId ?? null,
         } satisfies ClientMessage),
       );
       optsRef.current.log('→ session_init', 'out');

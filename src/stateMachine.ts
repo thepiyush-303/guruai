@@ -38,13 +38,19 @@ export function transition(
         case 'speech_start':
           return {
             nextState: ServerState.LISTENING,
-            sideEffects: ['OPEN_WHISPER_PIPE'],
+            sideEffects: ['OPEN_STT_STREAM'],
           };
         case 'vad_misfire':
           // No-op: stay IDLE, no side effects
           return {
             nextState: ServerState.IDLE,
             sideEffects: ['NOOP'],
+          };
+        case 'session_opener':
+          // A session just opened: GuruAI speaks first (greeting / recap).
+          return {
+            nextState: ServerState.LLM_STREAMING,
+            sideEffects: ['START_LLM_STREAM'],
           };
         default:
           return invalidTransition(currentState, event);
@@ -54,10 +60,9 @@ export function transition(
     case ServerState.LISTENING:
       switch (event) {
         case 'pcm_binary':
-          // Frame is already buffered in ctx.audioBuffer by handleBinaryMessage.
-          // Must NOT re-open the whisper pipe here: OPEN_WHISPER_PIPE clears
-          // ctx.audioBuffer, which would wipe the buffered utterance on every
-          // frame and leave Whisper with nothing to transcribe at speech_end.
+          // The frame was already streamed to Gnani + Vosk by handleBinaryMessage.
+          // Must NOT re-open the STT stream here: OPEN_STT_STREAM starts a new
+          // utterance, which would throw away everything said so far.
           return {
             nextState: ServerState.LISTENING,
             sideEffects: ['NOOP'],
@@ -65,12 +70,12 @@ export function transition(
         case 'speech_end':
           return {
             nextState: ServerState.TRANSCRIBING,
-            sideEffects: ['SEND_EOF_TO_WHISPER'],
+            sideEffects: ['COMMIT_STT'],
           };
         case 'vad_misfire':
           return {
             nextState: ServerState.IDLE,
-            sideEffects: ['DISCARD_WHISPER_BUFFER'],
+            sideEffects: ['DISCARD_STT'],
           };
         default:
           return invalidTransition(currentState, event);
@@ -79,23 +84,17 @@ export function transition(
     // ── TRANSCRIBING ──────────────────────────────────────────
     case ServerState.TRANSCRIBING:
       switch (event) {
-        case 'whisper_partial':
-          // Emit transcript_partial to client, trigger pre-fetch
-          return {
-            nextState: ServerState.TRANSCRIBING,
-            sideEffects: ['NOOP'],
-          };
-        case 'whisper_final':
+        case 'stt_final':
           return {
             nextState: ServerState.LLM_STREAMING,
             sideEffects: ['START_LLM_STREAM'],
           };
-        case 'whisper_error':
+        case 'stt_error':
           return {
             nextState: ServerState.IDLE,
             sideEffects: ['NOTIFY_CLIENT_ERROR'],
           };
-        // VAD events can arrive while Whisper is working; silently ignore them.
+        // VAD events can arrive while STT is finalizing; silently ignore them.
         case 'speech_start':
         case 'speech_end':
         case 'vad_misfire':
@@ -108,10 +107,10 @@ export function transition(
     case ServerState.LLM_STREAMING:
       switch (event) {
         case 'llm_token':
-          // Buffer token; check sentence boundary; pipe to Piper when ready
+          // Buffer token; check sentence boundary; send to TTS when ready
           return {
             nextState: ServerState.TTS_STREAMING,
-            sideEffects: ['SPAWN_PIPER'],
+            sideEffects: ['START_TTS'],
           };
         case 'llm_tool_call':
           return {
@@ -127,10 +126,10 @@ export function transition(
           // Barge-in while generating
           return {
             nextState: ServerState.BARGE_IN_INTERRUPTED,
-            sideEffects: ['ABORT_LLM_STREAM', 'KILL_PIPER'],
+            sideEffects: ['ABORT_LLM_STREAM', 'STOP_TTS'],
           };
         case 'llm_error':
-          // Groq stream failed (bad key, decommissioned model, network, etc.)
+          // LLM stream failed (bad key, decommissioned model, network, etc.)
           // before/while generating — reset to IDLE and surface the real error.
           return {
             nextState: ServerState.IDLE,
@@ -150,7 +149,7 @@ export function transition(
             sideEffects: ['NOOP'],
           };
         case 'llm_stream_complete':
-          // LLM done — wait for Piper to drain then go IDLE
+          // LLM done — the TTS queue keeps draining; go IDLE
           return {
             nextState: ServerState.IDLE,
             sideEffects: ['SEND_TURN_COMPLETE'],
@@ -159,7 +158,7 @@ export function transition(
           // Groq stream failed mid-response — stop TTS playback and reset.
           return {
             nextState: ServerState.IDLE,
-            sideEffects: ['ABORT_LLM_STREAM', 'KILL_PIPER', 'NOTIFY_CLIENT_ERROR'],
+            sideEffects: ['ABORT_LLM_STREAM', 'STOP_TTS', 'NOTIFY_CLIENT_ERROR'],
           };
         // VAD fires on TTS playback audio; ignore to avoid barge-in false positives.
         case 'speech_start':
@@ -202,7 +201,7 @@ export function transition(
           // New utterance starts after barge-in flush
           return {
             nextState: ServerState.LISTENING,
-            sideEffects: ['OPEN_WHISPER_PIPE'],
+            sideEffects: ['OPEN_STT_STREAM'],
           };
         case 'vad_misfire':
         case 'speech_end':

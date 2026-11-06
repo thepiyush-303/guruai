@@ -6,7 +6,7 @@
 import Groq from 'groq-sdk';
 import WebSocket from 'ws';
 import { SessionContext, ConversationMessage } from './types';
-import { weatherToolDefinition } from './tools/weather';
+import { sanitizeTtsChunk } from './ttsUtils';
 
 // ── Groq client singleton ─────────────────────────────────────
 
@@ -15,7 +15,7 @@ const groq = new Groq({
 });
 
 const GROQ_MODEL = process.env.GROQ_MODEL ?? 'qwen/qwen3.6-27b';
-const MAX_TOKENS = 512;   // Cap only — the system prompt drives brevity; leaves room for a genuinely long answer
+const MAX_TOKENS = 1024;  // Indic scripts are token-heavy; a ~200-word spoken explanation needs headroom
 const TEMPERATURE = 0.7;
 const MAX_RETRIES = 2;     // Retry once on 429 rate-limit
 const RETRY_DELAY_MS = 1000;
@@ -26,7 +26,7 @@ const RETRY_DELAY_MS = 1000;
 // constant as the conversation grows — an unbounded history slows every
 // subsequent turn (more prefill + more upload) and eventually overflows the
 // model's context window. 8 ≈ the last 4 exchanges, plenty for voice context.
-const MAX_HISTORY_MESSAGES = 8;
+const MAX_HISTORY_MESSAGES = 12;  // ~6 exchanges verbatim; older turns live in the session memory gist
 
 // gpt-oss models "think" before answering; the model default can spend several
 // seconds reasoning, which blows the voice latency budget. 'low' keeps a little
@@ -43,19 +43,10 @@ function isReasoningModel(model: string): boolean {
 }
 
 // ── System prompt ─────────────────────────────────────────────
+// The session owns the system prompt (language, level, spoken-output rules —
+// see session.ts buildSystemPrompt). This is only used if it is missing.
 
-const SYSTEM_PROMPT = `You are a helpful, concise voice assistant. Your replies are spoken aloud.
-
-SPEECH STYLE:
-- For casual/factual questions: answer in 1-2 sentences maximum.
-- Never use markdown, bullet points, or lists — speak naturally.
-- Only give longer replies when the user asks for a story, explanation, or step-by-step instructions.
-
-TOOL USE — CRITICAL RULE:
-- You have access to a get_weather tool.
-- ONLY call get_weather when the user EXPLICITLY asks about current weather or temperature for a specific place.
-- NEVER call any tool for creative questions, stories, general knowledge, jokes, opinions, or anything that does not require real-time external data.
-- If you are unsure whether to call a tool, DO NOT call it — just answer directly.`;
+const FALLBACK_SYSTEM_PROMPT = 'You are GuruAI, a patient teacher for Indian students. Your replies are spoken aloud: no markdown, lists or URLs.';
 
 // ── Abort controller for barge-in ────────────────────────────
 
@@ -122,9 +113,10 @@ export async function startGroqStream(
   //   2. assistant — plain text response
   //   3. assistant — with tool_calls array (the model's tool invocation request)
   //   4. tool   — tool execution result (has tool_call_id)
-  const history = capHistory(ctx.conversationHistory);
+  const systemMessage = ctx.conversationHistory.find((m) => m.role === 'system');
+  const history = capHistory(ctx.conversationHistory.filter((m) => m.role !== 'system'));
   const messages: Groq.Chat.ChatCompletionMessageParam[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: systemMessage?.content ?? FALLBACK_SYSTEM_PROMPT },
     ...history.map((m) => {
       if (m.role === 'tool') {
         return {
@@ -204,8 +196,6 @@ async function streamCompletion(
       stream: true,
       max_tokens: MAX_TOKENS,
       temperature: TEMPERATURE,
-      tools: [weatherToolDefinition],
-      tool_choice: 'auto',  // let model decide, but guided by strict system prompt
       ...(isReasoningModel(GROQ_MODEL) ? { reasoning_effort: REASONING_EFFORT } : {}),
     },
     { signal },
@@ -226,12 +216,15 @@ async function streamCompletion(
 
     // ── Text delta ────────────────────────────────────────────
     if (delta?.content) {
-      const text = delta.content;
-      fullText += text;
-      ctx.tokenCount++;
-
-      onEvent({ type: 'llm_token', delta: text, tokenIndex });
-      tokenIndex++;
+      // Strip markdown/emoji here so captions and speech both stay clean
+      // (does not trim: the spaces between streamed words must survive).
+      const text = sanitizeTtsChunk(delta.content);
+      if (text) {
+        fullText += text;
+        ctx.tokenCount++;
+        onEvent({ type: 'llm_token', delta: text, tokenIndex });
+        tokenIndex++;
+      }
     }
 
     // ── Tool call delta (Phase 5) ─────────────────────────────

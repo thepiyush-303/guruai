@@ -2,7 +2,7 @@
 // useAudioPlayback — schedules the TTS audio the server streams back.
 //
 // Ported from the prototype's client.js: a dedicated 22050Hz AudioContext
-// (Piper's rate), chunks scheduled back-to-back on the Web Audio clock rather
+// (the TTS rate), chunks scheduled back-to-back on the Web Audio clock rather
 // than played on arrival, and the barge-in flush (suspend → drop queue →
 // resume).
 //
@@ -91,7 +91,7 @@ export function useAudioPlayback(log: (text: string, kind?: LogKind) => void) {
 
   /** Buffered audio still ahead of the playback clock, in ms — how much sound
    *  is scheduled but not yet heard. The caption reveal paces itself to this so
-   *  the words track Piper's voice instead of racing the LLM's token burst. */
+   *  the words track the TTS voice instead of racing the LLM's token burst. */
   const remainingMs = useCallback(() => {
     const ctx = ctxRef.current;
     if (!ctx) return 0;

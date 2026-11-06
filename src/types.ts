@@ -3,6 +3,8 @@
 // Derived from PRD §3 (WebSocket Protocol & State Machine)
 // ============================================================
 
+import type { LanguageId } from './languages';
+
 // ── Server State Machine ─────────────────────────────────────
 
 export enum ServerState {
@@ -18,13 +20,13 @@ export enum ServerState {
 // ── Named Side Effects (Phase 1: stubs; replaced in later phases) ──
 
 export type SideEffectName =
-  | 'OPEN_WHISPER_PIPE'
-  | 'SEND_EOF_TO_WHISPER'
-  | 'DISCARD_WHISPER_BUFFER'
+  | 'OPEN_STT_STREAM'     // new utterance on the Gnani Prisma socket
+  | 'COMMIT_STT'          // speech_end: commit the utterance, await the final
+  | 'DISCARD_STT'         // vad_misfire: drop the utterance
   | 'START_LLM_STREAM'
   | 'ABORT_LLM_STREAM'
-  | 'SPAWN_PIPER'
-  | 'KILL_PIPER'
+  | 'START_TTS'           // first LLM token: open a sentence buffer → Gnani Timbre
+  | 'STOP_TTS'            // drop queued speech and cancel the request in flight
   | 'SEND_FILLER_TTS'
   | 'SEND_TURN_COMPLETE'
   | 'NOTIFY_CLIENT_ERROR'
@@ -39,11 +41,12 @@ export type IncomingEventType =
   | 'speech_end'
   | 'vad_misfire'
   | 'tool_result'
-  | 'wake_word_detected'  // v2.0 Phase 8: client detected Porcupine wake word
+  | 'update_preferences'  // client changes voice / class / board (IDLE only)
+  | 'switch_session'      // client starts a new session or resumes a saved one (IDLE only)
+  | 'session_opener'      // internal: GuruAI speaks first when a session opens
   | 'pcm_binary'          // internal tag for binary WS frames
-  | 'whisper_partial'     // internal: from Whisper subprocess stdout
-  | 'whisper_final'       // internal: from Whisper subprocess stdout
-  | 'whisper_error'       // internal: from Whisper subprocess stdout
+  | 'stt_final'           // internal: Gnani Prisma final transcript for the utterance
+  | 'stt_error'           // internal: Gnani Prisma failure / timeout
   | 'vosk_partial'        // internal: live interim caption from Vosk (display-only)
   | 'vosk_final'          // internal: Vosk end-of-utterance caption (display-only)
   | 'llm_token'           // internal: text delta from Groq/Gemini
@@ -58,6 +61,19 @@ export interface IncomingEvent {
   type: IncomingEventType;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   payload?: any;
+}
+
+// ── Session preferences (GuruAI) ──────────────────────────────
+
+export type Board = 'CBSE' | 'ICSE' | 'STATE' | 'OTHER';
+
+export interface SessionPreferences {
+  language: LanguageId;
+  /** Timbre voice id; must belong to the configured TTS model. */
+  voice?: string;
+  /** "6".."12" or "college"; optional. */
+  grade?: string;
+  board?: Board;
 }
 
 // ── Client → Server JSON Messages (PRD §3.3.1) ───────────────
@@ -76,6 +92,12 @@ export interface SessionInitMessage {
     vad_library: string;
     browser: string;
   };
+  /** GuruAI: language / voice / class / board. Defaults to English when absent. */
+  preferences?: Partial<SessionPreferences>;
+  /** Resume the saved session `session_id` (its language and history) instead of starting fresh. */
+  resume?: boolean;
+  /** For a NEW session: the student-made group to save it in. */
+  group_id?: string | null;
 }
 
 export interface SpeechStartMessage {
@@ -104,13 +126,21 @@ export interface ToolResultMessage {
   error: string | null;
 }
 
-// v2.0 Phase 8: client → server, logged only — no server state change
-export interface WakeWordDetectedMessage {
-  type: 'wake_word_detected';
+/** Change voice / class / board within the current session. Language is fixed per session. */
+export interface UpdatePreferencesMessage {
+  type: 'update_preferences';
   session_id: string;
-  keyword: string;
-  confidence: number;
-  timestamp_ms: number;
+  preferences: Partial<SessionPreferences>;
+}
+
+/** Leave the current session for a new one (e.g. a new language) or a saved one. */
+export interface SwitchSessionMessage {
+  type: 'switch_session';
+  session_id: string;
+  preferences?: Partial<SessionPreferences>;
+  resume?: boolean;
+  /** For a NEW session: the student-made group to save it in. */
+  group_id?: string | null;
 }
 
 export type ClientMessage =
@@ -119,7 +149,8 @@ export type ClientMessage =
   | SpeechEndMessage
   | VadMisfireMessage
   | ToolResultMessage
-  | WakeWordDetectedMessage;
+  | UpdatePreferencesMessage
+  | SwitchSessionMessage;
 
 // ── Server → Client JSON Messages (PRD §3.3.2) ───────────────
 
@@ -129,6 +160,12 @@ export interface SessionAckMessage {
   server_version: string;
   tts_sample_rate: 22050;
   state: ServerState;
+  /** True when this is a saved session being continued. */
+  resumed: boolean;
+  /** The session's title (generated from its content, or typed by the student). */
+  title: string | null;
+  /** The group the session belongs to, if any. */
+  group_id: string | null;
 }
 
 export interface StateChangeMessage {
@@ -152,6 +189,18 @@ export interface TranscriptFinalMessage {
   text: string;
   duration_ms: number;
   timestamp_ms: number;
+  /** Prisma v3.0 language identification, when it reports one. */
+  detected_language?: string;
+}
+
+// GuruAI: the server's effective preferences after session_init / update_preferences.
+export interface PreferencesAckMessage {
+  type: 'preferences_ack';
+  session_id: string;
+  preferences: SessionPreferences;
+  /** Vosk has a model for this language, so live captions will appear. */
+  live_captions: boolean;
+  tts_voice: string;
 }
 
 export interface LlmTokenMessage {
@@ -204,14 +253,42 @@ export interface GroundingSourcesMessage {
   timestamp_ms: number;
 }
 
-// Sent once, right after session_ack: the durable transcript from earlier
-// sessions so the client can populate its history sidebar. Display-only —
-// distinct from the LLM's in-prompt context. `session_id` on each turn is the
-// session it was spoken in, which the client uses to draw session dividers.
+// Sent right after session_ack: this session's saved transcript (empty for a
+// new session), so the client can show where the student left off.
+// Display-only — distinct from the LLM's in-prompt context.
 export interface HistoryLoadMessage {
   type: 'history_load';
   session_id: string;
   turns: Array<{ role: 'user' | 'assistant'; content: string; session_id: string; ts: number }>;
+}
+
+// GuruAI: the server's speech output started (first sentence queued) or is
+// finished (queue drained / cancelled). The client keeps the mic closed while
+// active — including the gaps between sentences, which the playback clock alone
+// cannot see — so GuruAI never "hears" itself.
+export interface TtsStateMessage {
+  type: 'tts_state';
+  session_id: string;
+  active: boolean;
+  timestamp_ms: number;
+}
+
+// GuruAI: the lesson's progress, from the session memory (sent when a session
+// opens and after every background memory update).
+export interface SessionContextMessage {
+  type: 'session_context';
+  session_id: string;
+  topic: string | null;
+  gist: string;
+  chunks: Array<{ title: string; status: 'pending' | 'explained' | 'understood' | 'struggling' }>;
+  next: number;
+}
+
+// GuruAI: a session's metadata changed (e.g. its title was generated).
+export interface SessionUpdatedMessage {
+  type: 'session_updated';
+  session_id: string;
+  title: string | null;
 }
 
 export type ServerMessage =
@@ -225,7 +302,11 @@ export type ServerMessage =
   | TurnCompleteMessage
   | ErrorMessage
   | GroundingSourcesMessage
-  | HistoryLoadMessage;
+  | HistoryLoadMessage
+  | PreferencesAckMessage
+  | TtsStateMessage
+  | SessionUpdatedMessage
+  | SessionContextMessage;
 
 // ── Session Context ───────────────────────────────────────────
 
@@ -233,12 +314,20 @@ export interface ConversationMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   tool_call_id?: string;
+  /** In-memory only (e.g. the opener instruction) — never stored or shown. */
+  ephemeral?: boolean;
 }
 
 export interface SessionContext {
   sessionId: string;
   state: ServerState;
-  audioBuffer: Buffer[];
+  preferences: SessionPreferences;
+  /** Group a new session is saved into on its first turn. */
+  groupId?: string | null;
+  /** Set by the session_opener event; consumed by the next START_LLM_STREAM. */
+  pendingOpener?: 'new' | 'resumed';
+  /** The LLM turn in flight is the opener: its reply is spoken but not stored. */
+  openerActive?: boolean;
   conversationHistory: ConversationMessage[];
   tokenCount: number;
   turnStartedAt: number | null;

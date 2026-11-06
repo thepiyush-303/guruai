@@ -1,13 +1,14 @@
 {
-  "name": "quickpass-voice-agent",
+  "name": "guruai",
   "version": "0.1.0",
-  "description": "Ultra-low latency voice AI agent server",
+  "description": "GuruAI — multilingual voice study teacher (Gnani Prisma STT + Timbre TTS)",
   "main": "dist/server.js",
   "scripts": {
     "dev": "ts-node src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "jest --runInBand --forceExit"
+    "test": "jest --runInBand --forceExit",
+    "smoke:gnani": "ts-node src/scripts/gnaniSmoke.ts"
   },
   "dependencies": {
     "@google/genai": "^2.19.0",

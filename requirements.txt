@@ -1,4 +1,2 @@
-faster-whisper==1.0.3
+# Python is only needed for Vosk live captions (vosk_server.py).
 vosk==0.3.45
-numpy>=1.21.0
-requests>=2.31.0

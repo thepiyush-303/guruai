@@ -7,9 +7,12 @@ import WebSocket from 'ws';
 import { SessionContext, ServerState, ClientMessage, ServerMessage, IncomingEventType } from './types';
 import { transition, isTransitionError } from './stateMachine';
 import { dispatchSideEffects, emitStateChange, sendJson, feedLiveStt } from './sideEffects';
+import { normalizePreferences, updateSessionPreferences } from './session';
 import { getActiveSentenceBuffer, setActiveSentenceBuffer } from './sharedState';
-import { appendTurn } from './contextStore';
-import { runSummarizerBackground } from './summarizer';
+import { appendTurn, touchSession } from './contextStore';
+import { openSession, persistSessionSettings, saveSessionRow, sendPreferencesAck } from './sessionLifecycle';
+import { updateMemoryBackground } from './memory/memoryUpdater';
+import { maybeTitleSession } from './titler';
 
 /**
  * Handle a text (JSON) message from the client.
@@ -61,6 +64,36 @@ export function handleTextMessage(
       break;
     }
 
+    case 'update_preferences': {
+      // Voice / class / board within this session. The language is bound to
+      // the session — a new language is a new session (switch_session).
+      if (ctx.state !== ServerState.IDLE) {
+        sendError(ws, ctx, 'INVALID_STATE', 'Preferences can only be changed while idle', true);
+        return;
+      }
+      const prefs = normalizePreferences({ ...msg.preferences, language: ctx.preferences.language }, ctx.preferences);
+      updateSessionPreferences(ctx, prefs);
+      persistSessionSettings(ctx);
+      sendPreferencesAck(ws, ctx);
+      break;
+    }
+
+    case 'switch_session': {
+      // Start a new session (new language) or resume a saved one, on this
+      // same connection. Only between turns, so nothing is mid-flight.
+      if (ctx.state !== ServerState.IDLE) {
+        sendError(ws, ctx, 'INVALID_STATE', 'Sessions can only be switched while idle', true);
+        return;
+      }
+      openSession(ws, {
+        sessionId: msg.session_id,
+        preferences: msg.preferences,
+        resume: msg.resume === true,
+        groupId: msg.group_id,
+      });
+      break;
+    }
+
     case 'tool_result': {
       // Tool results are client-side only per PRD; server handles this internally.
       // Placeholder for Phase 5.
@@ -92,11 +125,9 @@ export function handleBinaryMessage(
     return;
   }
 
-  // Buffer the PCM chunk in-memory (no disk writes per PRD §1.3 privacy req)
-  // Whisper needs the whole utterance, so it is flushed at speech_end.
-  ctx.audioBuffer.push(buf);
-
-  // Vosk recognizes as the audio arrives, producing live captions mid-utterance.
+  // Stream the frame straight on — Gnani Prisma transcribes while the student
+  // is still talking, and Vosk turns it into live captions. Nothing is written
+  // to disk (PRD §1.3 privacy requirement).
   feedLiveStt(buf);
 
   // State machine: LISTENING + pcm_binary → LISTENING (no state_change emitted)
@@ -153,7 +184,7 @@ function sendError(
 }
 
 /**
- * Handle internal events fired by subprocess callbacks (Whisper, Piper, Groq).
+ * Handle internal events fired by the speech engines and LLM streams.
  * Called from server.ts when a subprocess emits a transcript or error.
  */
 export function handleInternalEvent(
@@ -165,22 +196,8 @@ export function handleInternalEvent(
   const p = payload as Record<string, unknown> | undefined;
 
   switch (eventType) {
-    case 'whisper_partial': {
-      // Send transcript_partial to browser; no state change
-      const text = (p?.text as string) ?? '';
-      const msg: ServerMessage = {
-        type: 'transcript_partial',
-        session_id: ctx.sessionId,
-        text,
-        confidence: null,
-        timestamp_ms: Date.now(),
-      };
-      sendJson(ws, msg);
-      break;
-    }
-
     // ── Live Vosk captions (display-only) ─────────────────────
-    // Never enter conversationHistory: Whisper's final is what the LLM sees.
+    // Never enter conversationHistory: Prisma's final is what the LLM sees.
     // No state transition — these arrive continuously while LISTENING.
     case 'vosk_partial':
     case 'vosk_final': {
@@ -211,14 +228,23 @@ export function handleInternalEvent(
       break;
     }
 
-    case 'whisper_final': {
+    case 'stt_final': {
       const text        = (p?.text as string) ?? '';
       const duration_ms = (p?.duration_ms as number) ?? 0;
+      const detected    = p?.detected_language as string | undefined;
+      const via         = (p?.via as string | undefined) ?? 'stream';
+      const gnaniMs     = p?.gnani_latency_ms as number | undefined;
 
-      // Empty transcript (noise / barge-in silence) — reset to IDLE, skip Groq.
+      if (ctx.state !== ServerState.TRANSCRIBING) {
+        console.warn(`[${ctx.sessionId}] stt_final ignored in state ${ctx.state}`);
+        break;
+      }
+
+      // Empty transcript (noise / nothing recognised) — reset to IDLE, skip the LLM.
       if (!text.trim()) {
-        console.log(`[${ctx.sessionId}] Empty whisper transcript — resetting to IDLE`);
-        runTransition(ws, ctx, 'whisper_error'); // reuse error path (goes back to IDLE)
+        console.log(`[${ctx.sessionId}] Empty transcript — resetting to IDLE`);
+        ctx.pendingError = { code: 'STT_FAIL', message: "I didn't catch that. Please say it again." };
+        runTransition(ws, ctx, 'stt_error'); // reuse error path (goes back to IDLE)
         break;
       }
 
@@ -229,31 +255,51 @@ export function handleInternalEvent(
         text,
         duration_ms,
         timestamp_ms: Date.now(),
+        ...(detected ? { detected_language: detected } : {}),
       };
       sendJson(ws, msg);
-      console.log(`[${ctx.sessionId}] transcript_final: "${text.slice(0, 80)}"`);
+      console.log(`[${ctx.sessionId}] transcript_final${detected ? ` [${detected}]` : ''}: "${text.slice(0, 80)}"`);
 
-      // Latency: STT wall time (speech_end → transcript ready) vs model-only time.
+      // Latency: STT wall time (speech_end → transcript ready), commit → final,
+      // and Gnani's own reported processing time.
       ctx.sttFinalAt = Date.now();
       if (ctx.speechEndAt) {
-        console.log(`[latency] STT: ${ctx.sttFinalAt - ctx.speechEndAt}ms wall (${duration_ms}ms model)`);
+        console.log(
+          `[latency] STT: ${ctx.sttFinalAt - ctx.speechEndAt}ms wall (${duration_ms}ms after commit` +
+          `${gnaniMs !== undefined ? `, gnani ${gnaniMs}ms` : ''}${via === 'rest' ? ', via REST retry' : ''})`,
+        );
       }
 
-      // 2. Append user turn to conversation history for Groq multi-turn
+      // 2. Append user turn to conversation history for the LLM
       ctx.conversationHistory.push({ role: 'user', content: text });
 
-      // Persist the user turn to the durable transcript (no-op if disabled).
+      // Persist the user turn. The session row is created on its first turn, so
+      // sessions nobody spoke in are never listed. (Its title is generated from
+      // the content once the first answer is in — see titler.ts.)
+      saveSessionRow(ctx);
       appendTurn(ctx.sessionId, 'user', text);
+      touchSession(ctx.sessionId);
 
       // 3. Transition TRANSCRIBING → LLM_STREAMING
-      runTransition(ws, ctx, 'whisper_final');
+      runTransition(ws, ctx, 'stt_final');
       break;
     }
 
-    case 'whisper_error': {
+    case 'stt_error': {
+      const code    = (p?.code as string) ?? 'UNKNOWN';
       const msg_str = (p?.msg as string) ?? 'Unknown STT error';
-      console.error(`[${ctx.sessionId}] whisper_error: ${msg_str}`);
-      runTransition(ws, ctx, 'whisper_error');
+      console.error(`[${ctx.sessionId}] stt_error (${code}): ${msg_str}`);
+      if (ctx.state !== ServerState.TRANSCRIBING) {
+        console.warn(`[${ctx.sessionId}] stt_error ignored in state ${ctx.state}`);
+        break;
+      }
+      ctx.pendingError = {
+        code: 'STT_FAIL',
+        message: code === 'NO_API_KEY'
+          ? 'Speech recognition is not configured: set GNANI_API_KEY in .env.'
+          : `Speech recognition failed: ${msg_str}`,
+      };
+      runTransition(ws, ctx, 'stt_error');
       break;
     }
 
@@ -261,13 +307,13 @@ export function handleInternalEvent(
       const delta      = (p?.delta as string) ?? '';
       const tokenIndex = (p?.tokenIndex as number) ?? 0;
 
-      // Latency: the first token marks Groq's time-to-first-token and the end of
-      // the perceived wait (first audio follows ~one sentence-buffer flush later).
+      // Latency: the first token marks the LLM's time-to-first-token (first audio
+      // follows one sentence-buffer flush + one Timbre round trip later).
       if (!ctx.firstTokenAt) {
         ctx.firstTokenAt = Date.now();
         const ttft = ctx.sttFinalAt ? ctx.firstTokenAt - ctx.sttFinalAt : -1;
         const perceived = ctx.speechEndAt ? ctx.firstTokenAt - ctx.speechEndAt : -1;
-        console.log(`[latency] Groq TTFT: ${ttft}ms | perceived speech_end→first token: ${perceived}ms`);
+        console.log(`[latency] LLM TTFT: ${ttft}ms | perceived speech_end→first token: ${perceived}ms`);
       }
 
       // 1. Stream token to browser for live text display
@@ -280,15 +326,17 @@ export function handleInternalEvent(
       };
       sendJson(ws, msg);
 
-      // 2. Feed token to sentence buffer → fires Piper synthesis at sentence boundaries
+      // 2. First token: LLM_STREAMING → TTS_STREAMING. Its START_TTS effect
+      //    creates the sentence buffer, so this must run BEFORE the append below
+      //    — otherwise the first token is never spoken.
+      if (ctx.state === ServerState.LLM_STREAMING) {
+        runTransition(ws, ctx, 'llm_token');
+      }
+
+      // 3. Feed token to sentence buffer → queues Timbre synthesis at sentence boundaries
       const activeSentenceBuffer = getActiveSentenceBuffer();
       if (activeSentenceBuffer) {
         activeSentenceBuffer.append(delta);
-      }
-
-      // 3. Transition LLM_STREAMING → TTS_STREAMING on first token
-      if (ctx.state === ServerState.LLM_STREAMING) {
-        runTransition(ws, ctx, 'llm_token');
       }
       break;
     }
@@ -297,12 +345,18 @@ export function handleInternalEvent(
       // Persist the assistant's spoken answer to the durable transcript. The
       // full text arrives on this event (from groq/geminiStream); the tool-call
       // path sends empty text here and is intentionally not persisted.
+      // The opener (greeting / recap) is spoken but not stored: it is not part
+      // of the lesson, and would only clutter the transcript and the memory.
       const fullText = (p?.fullText as string) ?? '';
-      if (fullText.trim()) {
+      const wasOpener = ctx.openerActive === true;
+      ctx.openerActive = false;
+      if (fullText.trim() && !wasOpener) {
         appendTurn(ctx.sessionId, 'assistant', fullText.trim());
+        touchSession(ctx.sessionId);
+        maybeTitleSession(ctx.sessionId);
       }
 
-      // Flush any remaining buffered text to Piper
+      // Flush any remaining buffered text to TTS
       const activeSentenceBuffer = getActiveSentenceBuffer();
       if (activeSentenceBuffer) {
         activeSentenceBuffer.flush();
@@ -311,8 +365,16 @@ export function handleInternalEvent(
       // Transition to IDLE; side-effect SEND_TURN_COMPLETE sends metrics to browser
       runTransition(ws, ctx, 'llm_stream_complete');
       
-      // Fire background summarizer (non-blocking)
-      runSummarizerBackground().catch(err => console.error(err));
+      // Update the session memory and learner profile in the background.
+      if (!wasOpener) updateMemoryBackground(ctx.sessionId);
+      break;
+    }
+
+    case 'session_opener': {
+      // Only when nothing else is happening (the student may already be talking).
+      if (ctx.state !== ServerState.IDLE) break;
+      ctx.pendingOpener = p?.kind === 'resumed' ? 'resumed' : 'new';
+      runTransition(ws, ctx, 'session_opener');
       break;
     }
 
@@ -330,7 +392,7 @@ export function handleInternalEvent(
 
     case 'tool_result_ready': {
       // The backend tool execution finished and history was updated. 
-      // State machine transitioning TOOL_EXECUTING -> LLM_STREAMING will call START_GROQ_STREAM.
+      // State machine transitioning TOOL_EXECUTING -> LLM_STREAMING will call START_LLM_STREAM.
       runTransition(ws, ctx, 'tool_result_ready');
       break;
     }

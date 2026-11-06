@@ -1,23 +1,28 @@
-# Vani - Voice-Based AI Agent
+# GuruAI (formerly Vani) - Voice-Based AI Study Teacher
 ## Master Technical Specification and Product Requirements Document (PRD)
+
+> **2026-11-06 update:** speech now runs on **Gnani.ai**. **Prisma** (cloud STT) replaces Faster-Whisper
+> and **Timbre** (cloud TTS) replaces Piper. Vosk remains for live captions only. Students choose one of
+> 10 Indian languages or Hinglish. §1–2 below are updated; for everything about the migration and the
+> teacher/notes roadmap, see `.claude/guruai-design.md`, which is authoritative where this file is older.
 
 ---
 
 # 1. Executive Summary & Core Architecture
 
 **Overview:**
-Vani is an ultra-low latency, persistent voice-based AI agent designed to interact with users over a continuous audio stream. It operates via a real-time WebSocket architecture rather than traditional HTTP Request/Response or WebRTC patterns. The system relies heavily on local, highly-optimized processes (Faster-Whisper for high-quality final transcriptions, Vosk for low-latency live captions, and Piper for low-latency text-to-speech) mapped alongside streaming cloud LLM invocations (Gemini and Groq) to deliver sub-second conversational latency.
+GuruAI is a low-latency, multilingual voice study teacher for Indian students. It runs over a real-time WebSocket between the browser and a Node server. Speech uses Gnani.ai's realtime APIs: Prisma for speech-to-text and Timbre for text-to-speech, both over persistent WebSockets. A local Vosk process provides live captions only. Answers come from streaming Gemini or Groq calls driven by a language- and class-aware teacher prompt.
 
 **End-to-End Voice Pipeline:**
 1. **Mic Capture:** The React/Vite client captures user audio (16kHz mono) applying native echo cancellation, noise suppression, and auto gain control.
 2. **Voice Activity Detection (VAD):** A client-side Silero ONNX model continually analyzes frames, filtering noise. On detecting speech \`speech_start\` is fired over the WebSocket.
 3. **Audio Streaming:** Raw 16-bit Float32 PCM is converted to Int16 PCM and streamed in 512-sample (32ms) chunks over WebSockets to the Node.js server.
 4. **Speech-to-Text (STT):**
-   - The server pushes the PCM to a persistent Python **Faster-Whisper** subprocess handling final generation.
-   - Synchronously, the server routes PCM to an independent **Vosk** subprocess pushing live, interim captions to the client.
+   - The server streams each 1024-byte frame live to **Gnani Prisma** (`wss://api.vachana.ai/stt/v3/stream`) with the student's `language_code`. On `speech_end` it sends `{"type":"commit"}` and gets the final transcript back.
+   - The same frames go to a local **Vosk** subprocess (model chosen per language) for live, display-only captions.
 5. **Session Orchestration:** Upon user silence, \`speech_end\` finalizes the transcription buffer. Nodes state machine manages the jump from STT to LLM.
 6. **LLM Inference:** The text is dispatched to Gemini (or Groq) using chunked, token-by-token streaming. The system drops "thinking" buffers (removing \`<think>\` tags).
-7. **Text-to-Speech (TTS):** Sanitized text buffers stream instantly into a local **Piper TTS** subprocess. Piper streams 22050Hz raw PCM chunks directly to the active WebSocket.
+7. **Text-to-Speech (TTS):** Sanitized sentences queue onto a persistent **Gnani Timbre** socket (`wss://api.vachana.ai/api/v1/tts`), one request at a time, in the student's language. The server asks for raw s16le 22050 Hz audio, decodes the base64 chunks, and forwards them as framed binary WebSocket messages.
 8. **Client Audio Playback:** The client decodes binary chunks against a custom framing header (\`0xAF 0xFE\`) and schedules playback through the browser Web Audio API context.
 
 **Architecture Diagram:**
@@ -83,14 +88,15 @@ sequenceDiagram
 | **Backend Comm** | \`ws\` | ^8.18.0 | Standard WebSockets for binary and JSON payload transportation. |
 | **Frontend Framework**| React + ReactDOM / Vite | ^19.2.8 / ^6.1.0 | Client UI rendering side (History Sidebar, Orb interface, Logs). |
 | **Voice Activity** | \`@ricky0123/vad-web\` | 0.0.22 | Silero VAD implementation loaded via local WASM/ONNX instances. |
-| **Python Audio STT** | \`faster-whisper\` | \`==1.0.3\` | Highly accurate CPU-optimized (\`int8\`) end-of-utterance transcription. |
+| **Cloud STT** | Gnani Prisma (\`prisma-v3.0\`) | realtime WS | Authoritative multilingual transcription (10 Indian languages + Hinglish codemix). |
+| **Cloud TTS** | Gnani Timbre (\`timbre-v3.0\`) | realtime WS | Natural Indian voices in every supported language, raw PCM 22050 Hz. |
 | **Python Live STT** | \`vosk\` | \`==0.3.45\` | Ultra-low latency partial captions mapped strictly to local models. |
 | **LLM Provider (A)** | \`@google/genai\` | ^2.19.0 | Primary backend logic for Gemini, supporting dynamic tools and web grounding. |
 | **LLM Provider (B)** | \`groq-sdk\` | ^1.5.0 | Alternative engine mapping LPU inference over models like \`qwen3.6-27b\`. |
 
 **External Resources & Cloud Backends Details:**
-- **Whisper & Vosk:** Operate synchronously via local Python sub-processes.
-- **Piper TTS:** Accessed locally through a binary execution pattern.
+- **Gnani (Prisma + Timbre):** Needs \`GNANI_API_KEY\` (server-side only). Models, voice and URLs are env-configurable.
+- **Vosk:** A local Python subprocess, used for live captions only.
 - **Gemini:** Requires \`GEMINI_API_KEY\`, defaults to \`gemini-2.5-flash-lite\` model. Uses native function calling and search grounding metadata blocks.
 - **Groq:** Requires \`GROQ_API_KEY\`, defaults to \`qwen/qwen3.6-27b\`.
 - External tools rely natively on Gemini function callbacks using HTTP requests directed by LLM constraints.

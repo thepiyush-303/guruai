@@ -2,11 +2,12 @@
 """
 vosk_server.py — Persistent Vosk streaming-STT subprocess (live captions)
 =========================================================================
-Companion to faster_whisper_server.py. Vosk produces REAL interim results
-while the user is still speaking; Whisper produces the accurate final that
-is sent to the LLM. Vosk output is display-only — never fed to the LLM.
+Vosk produces REAL interim results while the student is still speaking;
+Gnani Prisma (cloud) produces the accurate final that is sent to the LLM.
+Vosk output is display-only — never fed to the LLM. The model (and so the
+language) is chosen per session via VOSK_MODEL_PATH.
 
-stdin protocol  (length-prefixed PCM, identical framing to Whisper):
+stdin protocol  (length-prefixed PCM):
     [4-byte uint32 LE = byte_count][int16 PCM bytes]   ← feed audio, live
     [4-byte uint32 LE = 0x00000000]                    ← finalize utterance
     [4-byte uint32 LE = 0xFFFFFFFF]                    ← silent reset (no output)

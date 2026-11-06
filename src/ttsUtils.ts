@@ -1,19 +1,16 @@
 // ============================================================
-// ttsUtils.ts — Text sanitization before Piper TTS pipeline
-// PRD_v2.md §B.5: strips URLs, markdown links, citation refs,
-// and HTML so the spoken output stays clean when Gemini
-// Search Grounding is active.
+// ttsUtils.ts — Text sanitization before TTS
+// Strips anything that must never be spoken aloud: URLs, markdown,
+// citation refs, HTML, emoji. Teachers like **bold**; the voice must
+// not read asterisks.
 // ============================================================
 
 /**
- * Strips content that must never be spoken aloud:
- *  - Bare URLs (https://... or http://...)
- *  - Markdown hyperlinks → keeps display text only
- *  - Numeric citation brackets [1], [1,2], [1, 3]
- *  - HTML tags
- *  - Collapses runs of whitespace left by removals
+ * The replacements, without trimming. Safe on streamed LLM chunks: a chunk's
+ * leading/trailing space is the gap between two words and must survive, or
+ * "first law" + " states" becomes "lawstates".
  */
-export function sanitizeForTTS(text: string): string {
+export function sanitizeTtsChunk(text: string): string {
   return text
     // 1. Markdown links: [display text](url) → "display text"
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
@@ -23,7 +20,16 @@ export function sanitizeForTTS(text: string): string {
     .replace(/\[\d+(?:,\s*\d+)*\]/g, '')
     // 4. HTML tags
     .replace(/<[^>]*>/g, '')
-    // 5. Collapse multiple spaces / leading-trailing whitespace
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+    // 5. Markdown emphasis / headings / code marks
+    .replace(/[*_`#~]+/g, '')
+    // 6. Emoji and pictographs (and the variation selector that follows them)
+    .replace(/\p{Extended_Pictographic}️?/gu, '')
+    // 7. Collapse runs of spaces left by removals (newlines are kept: they are
+    //    sentence boundaries for the sentence buffer)
+    .replace(/[ \t]{2,}/g, ' ');
+}
+
+/** Full sanitization for a complete sentence or text: replacements + trim. */
+export function sanitizeForTTS(text: string): string {
+  return sanitizeTtsChunk(text).replace(/\s{2,}/g, ' ').trim();
 }
