@@ -58,6 +58,10 @@ export class SentenceBuffer {
   /** Force-flush any remaining content immediately (LLM stream complete). */
   flush(): void {
     this.clearTimer();
+    // Same boundaries and size cap as while streaming: the tail of a long
+    // answer must not go out as one oversized TTS request.
+    this.tryFlush();
+    this.clearTimer();
     const remaining = this.buffer.trim();
     this.buffer = '';
     if (remaining.length > 0) this.emit(remaining);

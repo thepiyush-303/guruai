@@ -190,13 +190,13 @@ export type ServerMessage =
   | { type: 'transcript_final'; session_id: string; text: string; duration_ms: number; timestamp_ms: number; detected_language?: string }
   | { type: 'llm_token'; session_id: string; delta: string; token_index: number; timestamp_ms: number }
   | { type: 'tool_call'; session_id: string; tool_call_id: string; tool_name: string; arguments: Record<string, unknown>; timestamp_ms: number }
-  | { type: 'tts_interrupted'; session_id: string; reason: 'barge_in'; timestamp_ms: number }
+  | { type: 'tts_interrupted'; session_id: string; reason: 'barge_in' | 'stopped' | 'new_question' | 'voice_off'; timestamp_ms: number }
   | { type: 'turn_complete'; session_id: string; total_latency_ms: number; token_count: number; timestamp_ms: number }
   | { type: 'error'; session_id: string; code: string; message: string; recoverable: boolean; timestamp_ms: number }
   | { type: 'grounding_sources'; session_id: string; queries: string[]; sources: GroundingSource[]; timestamp_ms: number }
   | { type: 'history_load'; session_id: string; turns: PersistedTurn[] }
   | { type: 'preferences_ack'; session_id: string; preferences: Preferences; live_captions: boolean; tts_voice: string }
-  | { type: 'tts_state'; session_id: string; active: boolean; timestamp_ms: number }
+  | { type: 'tts_state'; session_id: string; active: boolean; timestamp_ms: number; spoken?: number; failed?: number }
   | { type: 'session_updated'; session_id: string; title: string | null }
   | ({ type: 'session_context'; session_id: string } & LessonView)
   | {
@@ -220,7 +220,12 @@ export type ClientMessage =
       resume: boolean;
       /** For a new session: the group to save it in. */
       group_id: string | null;
+      /** Speak replies (default) or send text only. */
+      voice_output: boolean;
     }
+  | { type: 'text_input'; session_id: string; text: string }
+  | { type: 'set_voice_output'; session_id: string; enabled: boolean }
+  | { type: 'stop_speaking'; session_id: string }
   | { type: 'update_preferences'; session_id: string; preferences: Partial<Preferences> }
   | { type: 'switch_session'; session_id: string; preferences: Preferences; resume: boolean; group_id: string | null }
   | { type: 'set_notes'; session_id: string; enabled: boolean }

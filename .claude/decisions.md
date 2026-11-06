@@ -586,6 +586,41 @@ rendered PDF).
 **Consequences.** Another machine needs Chrome (or `PDF_BROWSER_PATH`, or `npx playwright install chromium`)
 and the Noto fonts for PDF. The in-app notes don't depend on either.
 
+## G19 — An app shell with real routes; the session is the only live screen ✅ (2026-11-07)
+
+**Decision.**
+- The client has four routes: `/`, `/new`, `/s/<id>` and `/settings`.
+- There is a persistent sidebar of sessions and groups as links.
+- There is one side panel with tabs.
+- Only the session page connects, listens and shows the composer.
+- The router is a small pushState hook, with no dependency. The server falls back to `index.html` for extension-less paths.
+
+**Why.** The overlay UI stacked panels on top of each other, showed Connect/Mute everywhere, and made moving between sessions hard. Real URLs give Back/Forward, reloads and open-in-new-tab for free.
+
+**Consequences.** Each session page owns one socket. On the server, the newest connection takes over the session (G20).
+
+## G20 — Typed questions and text-only replies go through the same turn ✅ (2026-11-07)
+
+**Decision.**
+- `text_input` is a turn like a final transcript (`IDLE + text_input → LLM_STREAMING`). It is refused while an answer streams, and it replaces speech still playing.
+- Spoken replies are a per-device switch sent as `voice_output` / `set_voice_output`. When off, the server never calls Timbre.
+- A new connection retires the previous one (close 4000).
+
+**Why.** One path for spoken and typed questions keeps memory, notes and titles identical. Text-only must save the TTS cost, not just mute the browser.
+
+**Consequences.** There is no typing while an answer is being generated (a sub-second window with Groq).
+
+## G21 — Timbre's two `complete` messages; no sentence is ever skipped silently ✅ (2026-11-07)
+
+**Decision.**
+- The end-of-audio `complete` ends a request. The `complete` summary that follows is expected and ignored.
+- A sentence that errors, stalls or loses its socket mid-audio is retried over REST, then split in two, before it is counted as failed.
+- Every run reports spoken/failed counts, to the log and to the client.
+
+**Why.** Measured with `smoke:tts-long`, the summary message shifted every later sentence by one slot and dropped the end of long answers. This was the "last lines missing" bug. Silent skips had hidden it.
+
+**Consequences.** A failed sentence costs one REST call (about 1 s) instead of disappearing.
+
 ---
 
 ## Pending / not yet decided ⏸

@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "jest --runInBand --forceExit",
-    "smoke:gnani": "ts-node src/scripts/gnaniSmoke.ts"
+    "smoke:gnani": "ts-node src/scripts/gnaniSmoke.ts",
+    "smoke:tts-long": "ts-node src/scripts/ttsLongSmoke.ts"
   },
   "dependencies": {
     "@google/genai": "^2.19.0",

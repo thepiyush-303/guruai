@@ -1,17 +1,17 @@
 // ============================================================
 // NotesPanel — the study notes, written while the lesson happens.
 //
-// Docked beside the lesson (a slide-over on narrow screens). The headline is
-// the subject; sections fill in as GuruAI teaches, and new blocks glow
-// briefly so the student sees them appear while listening. The panel also
-// holds the notes switch (this session), the default for new sessions, and
-// the PDF download.
+// The Notes tab of the session's side panel. The headline is the subject;
+// sections fill in as GuruAI teaches, and new blocks glow briefly so the
+// student sees them appear while listening. It also holds the notes switch
+// (this session), the default for new sessions, and the PDF download.
 // ============================================================
 
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { memo, useEffect, useRef, useState } from 'react';
 import { downloadNotesPdf } from '../api.ts';
+import { Icon } from './Icon.tsx';
 import type { NoteBlock, NotesState } from '../protocol.ts';
 
 interface Props {
@@ -20,7 +20,6 @@ interface Props {
   fresh: ReadonlySet<string>;
   onToggle: (enabled: boolean) => void;
   onDefaultChange: (enabled: boolean) => void;
-  onClose: () => void;
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -52,7 +51,7 @@ function Block({ block, fresh }: { block: NoteBlock; fresh: boolean }) {
   );
 }
 
-export function NotesPanel({ notes, fresh, onToggle, onDefaultChange, onClose }: Props) {
+export function NotesPanel({ notes, fresh, onToggle, onDefaultChange }: Props) {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -98,21 +97,19 @@ export function NotesPanel({ notes, fresh, onToggle, onDefaultChange, onClose }:
   const pdfBlocked = !notes?.pdfAvailable ? notes?.pdfReason ?? 'PDF is unavailable on this server.' : count === 0 ? 'No notes yet.' : null;
 
   return (
-    <aside className="notes" aria-label="Study notes">
+    <div className="notes">
       <header className="notes__head">
-        <span className="notes__label">Notes</span>
-        <label className="notes__switch" title="Make notes in this session">
+        <label className="switch" title="Make notes in this session">
           <input
             type="checkbox"
+            role="switch"
             checked={notes?.enabled ?? false}
             disabled={!notes}
             onChange={(e) => onToggle(e.target.checked)}
           />
-          {notes?.enabled ? 'On' : 'Off'}
+          <span className="switch__track" aria-hidden="true" />
+          <span>Make notes in this session</span>
         </label>
-        <button className="notes__close" onClick={onClose} aria-label="Hide notes">
-          ×
-        </button>
       </header>
 
       <div className="notes__scroll" ref={scrollRef}>
@@ -146,25 +143,26 @@ export function NotesPanel({ notes, fresh, onToggle, onDefaultChange, onClose }:
 
       <footer className="notes__foot">
         <button
-          className="btn btn--primary btn--small"
+          className="btn btn--primary"
           onClick={() => void download()}
           disabled={!!pdfBlocked || downloading}
           title={pdfBlocked ?? 'Download these notes as a PDF'}
         >
+          <Icon name="download" size={16} />
           {downloading ? 'Preparing PDF…' : 'Download PDF'}
         </button>
         {notes && (
-          <label className="notes__default">
+          <label className="check">
             <input type="checkbox" checked={notes.defaultEnabled} onChange={(e) => onDefaultChange(e.target.checked)} />
-            Make notes in new sessions
+            Make notes in new sessions too
           </label>
         )}
         {(error || (notes && !notes.pdfAvailable)) && (
-          <p className="setup__error" role="alert">
+          <p className="form-error" role="alert">
             {error ?? notes?.pdfReason}
           </p>
         )}
       </footer>
-    </aside>
+    </div>
   );
 }

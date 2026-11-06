@@ -17,9 +17,15 @@ const TAU = Math.PI * 2;
 const SEGMENTS = 240; // points per trace
 const SWEEP_MS = 520; // the one-time draw-in on mount
 
-// --signal and --signal-deep from index.css, as RGB so they can be mixed.
-const USER_RGB = [79, 168, 255] as const;
-const ASSISTANT_RGB = [107, 123, 255] as const;
+// Colours come from the theme (--orb-user, --orb-assistant, --orb-grid as
+// "r, g, b"), re-read every so often so a theme switch recolours the orb.
+type RGB = [number, number, number];
+const palette = { user: [79, 168, 255] as RGB, assistant: [107, 123, 255] as RGB, grid: [120, 150, 200] as RGB };
+
+function readRgb(style: CSSStyleDeclaration, name: string, fallback: RGB): RGB {
+  const parts = style.getPropertyValue(name).split(',').map((x) => Number(x.trim()));
+  return parts.length === 3 && parts.every((n) => Number.isFinite(n)) ? (parts as RGB) : fallback;
+}
 
 // Per-trace look: base radius as a fraction of R, amplitude scale, alpha, width.
 const TRACES = [
@@ -35,16 +41,21 @@ interface Props {
   source: LevelSource;
   /** Not connected: hold everything still and hold it back. */
   dim: boolean;
+  /** Small rendition (no graticule ticks). */
+  compact?: boolean;
 }
 
 function rgba(mix: number, alpha: number): string {
-  const r = Math.round(USER_RGB[0] + (ASSISTANT_RGB[0] - USER_RGB[0]) * mix);
-  const g = Math.round(USER_RGB[1] + (ASSISTANT_RGB[1] - USER_RGB[1]) * mix);
-  const b = Math.round(USER_RGB[2] + (ASSISTANT_RGB[2] - USER_RGB[2]) * mix);
+  const { user: u, assistant: a } = palette;
+  const r = Math.round(u[0] + (a[0] - u[0]) * mix);
+  const g = Math.round(u[1] + (a[1] - u[1]) * mix);
+  const b = Math.round(u[2] + (a[2] - u[2]) * mix);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-export function Orb({ readLevel, source, dim }: Props) {
+const grid = (alpha: number) => `rgba(${palette.grid.join(', ')}, ${alpha})`;
+
+export function Orb({ readLevel, source, dim, compact = false }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Props read inside the animation loop, which must not restart on re-render.
@@ -84,10 +95,18 @@ export function Orb({ readLevel, source, dim }: Props) {
     let raf = 0;
     const startedAt = performance.now();
     let hueMix = 0;
+    let frames = 0;
+    const refreshPalette = () => {
+      const style = getComputedStyle(canvas);
+      palette.user = readRgb(style, '--orb-user', palette.user);
+      palette.assistant = readRgb(style, '--orb-assistant', palette.assistant);
+      palette.grid = readRgb(style, '--orb-grid', palette.grid);
+    };
+    refreshPalette();
 
     const drawGraticule = (cx: number, cy: number, R: number, sweep: number, alpha: number) => {
       const from = -Math.PI / 2;
-      ctx.strokeStyle = `rgba(120, 150, 200, ${0.16 * alpha})`;
+      ctx.strokeStyle = grid(0.16 * alpha);
       ctx.lineWidth = dpr;
       ctx.beginPath();
       ctx.arc(cx, cy, R * 0.97, from, from + TAU * sweep);
@@ -96,20 +115,20 @@ export function Orb({ readLevel, source, dim }: Props) {
       // 72 ticks, every 5°; the four cardinals are longer. Ticks are the
       // instrument's fixed reference — they never move, which is what makes
       // the trace read as a live signal.
-      for (let i = 0; i < 72; i++) {
+      for (let i = 0; i < (compact ? 0 : 72); i++) {
         const a = from + (i / 72) * TAU;
         if ((i / 72) > sweep) break;
         const cardinal = i % 18 === 0;
         const inner = R * (cardinal ? 0.93 : 0.97);
         const outer = R * (cardinal ? 1.03 : 1.0);
-        ctx.strokeStyle = `rgba(120, 150, 200, ${(cardinal ? 0.32 : 0.14) * alpha})`;
+        ctx.strokeStyle = grid((cardinal ? 0.32 : 0.14) * alpha);
         ctx.beginPath();
         ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner);
         ctx.lineTo(cx + Math.cos(a) * outer, cy + Math.sin(a) * outer);
         ctx.stroke();
       }
 
-      ctx.fillStyle = `rgba(120, 150, 200, ${0.3 * alpha})`;
+      ctx.fillStyle = grid(0.3 * alpha);
       ctx.beginPath();
       ctx.arc(cx, cy, 1.5 * dpr, 0, TAU);
       ctx.fill();
@@ -117,6 +136,7 @@ export function Orb({ readLevel, source, dim }: Props) {
 
     const frame = (now: number) => {
       raf = requestAnimationFrame(frame);
+      if (++frames % 30 === 0) refreshPalette();
       const elapsed = now - startedAt;
       const sweep = calm ? 1 : Math.min(1, elapsed / SWEEP_MS);
       const t = calm ? 0 : elapsed / 1000;
@@ -133,6 +153,7 @@ export function Orb({ readLevel, source, dim }: Props) {
       const cx = width / 2;
       const cy = height / 2;
       const R = Math.min(width, height) / 2 - 2 * dpr;
+      if (R < 4) return; // not laid out (e.g. hidden on a small screen)
 
       drawGraticule(cx, cy, R, sweep, fade);
 
@@ -182,7 +203,7 @@ export function Orb({ readLevel, source, dim }: Props) {
       cancelAnimationFrame(raf);
       observer.disconnect();
     };
-  }, []);
+  }, [compact]);
 
-  return <canvas ref={canvasRef} className="orb" aria-hidden="true" />;
+  return <canvas ref={canvasRef} className={compact ? 'orb orb--compact' : 'orb'} aria-hidden="true" />;
 }

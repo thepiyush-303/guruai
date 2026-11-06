@@ -51,7 +51,7 @@ export function ProfilePanel({ open }: { open: boolean }) {
     }
   };
 
-  if (!snap) return <p className="sessions__empty">{error ?? 'Loading…'}</p>;
+  if (!snap) return <p className="empty-note">{error ?? 'Loading…'}</p>;
   const profile = snap.profile;
   const known = FIELDS.filter(({ key }) => {
     const v = profile[key];
@@ -65,17 +65,23 @@ export function ProfilePanel({ open }: { open: boolean }) {
         right. Only what you said; never religion, caste, health, money or contact details.
       </p>
 
-      <label className="profile__switch">
-        <input
-          type="checkbox"
-          checked={snap.memory_enabled}
-          onChange={(e) => void run(() => api.setMemoryEnabled(e.target.checked))}
-        />
-        Remember things about me
+      <label className="toggle-row">
+        <span className="toggle-row__text">
+          <span className="toggle-row__label">Remember things about me</span>
+        </span>
+        <span className="switch">
+          <input
+            type="checkbox"
+            role="switch"
+            checked={snap.memory_enabled}
+            onChange={(e) => void run(() => api.setMemoryEnabled(e.target.checked))}
+          />
+          <span className="switch__track" aria-hidden="true" />
+        </span>
       </label>
 
       {known.length === 0 ? (
-        <p className="sessions__empty">Nothing remembered yet. Tell GuruAI your name, your class or what you enjoy.</p>
+        <p className="empty-note">Nothing remembered yet. Tell GuruAI your name, your class or what you enjoy.</p>
       ) : (
         <dl className="profile__facts">
           {known.map(({ key, label }) => {
@@ -121,7 +127,7 @@ export function ProfilePanel({ open }: { open: boolean }) {
           </button>
         ))}
       {error && (
-        <p className="setup__error" role="alert">
+        <p className="form-error" role="alert">
           {error}
         </p>
       )}

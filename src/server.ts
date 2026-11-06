@@ -11,7 +11,7 @@ import * as path from 'path';
 import { SessionInitMessage, ServerMessage } from './types';
 import { SessionStore } from './session';
 import { handleTextMessage, handleBinaryMessage, handleInternalEvent } from './messageHandler';
-import { initSpeechServices, endSpeechSession, stopSpeechServices } from './sideEffects';
+import { initSpeechServices, endSpeechSession, stopSpeechServices, setVoiceOutput } from './sideEffects';
 import { initContextStore } from './contextStore';
 import { openSession, sendNotesUpdate, sendSessionContext } from './sessionLifecycle';
 import { onNotesChanged } from './notes/notesAgent';
@@ -54,7 +54,10 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
-  const urlPath = req.url === '/' ? '/index.html' : (req.url ?? '/index.html');
+  // The client routes (/, /new, /s/<id>, /settings) are all the same page.
+  const pathname = (req.url ?? '/').split(/[?#]/)[0];
+  const isRoute = !path.extname(pathname);
+  const urlPath = pathname === '/' || isRoute ? '/index.html' : pathname;
   const filePath = path.join(PUBLIC_DIR, path.normalize(urlPath));
 
   // Security: prevent directory traversal outside client/dist/
@@ -129,19 +132,17 @@ initSpeechServices((eventType, payload) => {
 let activeWs: WebSocket | null = null;
 
 wss.on('connection', (ws: WebSocket) => {
-  // ── Single-session guard ───────────────────────────────────
-  if (SessionStore.has()) {
-    console.warn('[server] Rejected new connection — a session is already active');
-    ws.send(JSON.stringify({
-      type: 'error',
-      session_id: '',
-      code: 'INTERNAL',
-      message: 'Server already has an active session. Only one session is supported.',
-      recoverable: false,
-      timestamp_ms: Date.now(),
-    } satisfies ServerMessage));
-    ws.close();
-    return;
+  // ── One session at a time: the newest connection wins ─────
+  // Moving to another session in the app (or reloading the page) opens a new
+  // socket before the old one's close has arrived. The old one is retired
+  // here, and its late events are ignored below.
+  if (activeWs && activeWs !== ws) {
+    const old = activeWs;
+    console.log('[server] New connection replaces the previous one');
+    if (SessionStore.has()) endSpeechSession();
+    SessionStore.clear();
+    activeWs = null;
+    old.close(4000, 'replaced by a newer connection');
   }
 
   // Track this connection for subprocess callbacks
@@ -162,6 +163,7 @@ wss.on('connection', (ws: WebSocket) => {
   ws.on('message', (data, isBinary) => {
     // ── Pre-init: accept only session_init ──────────────────
     if (!initialized) {
+      if (activeWs !== ws) return; // replaced before it said hello
       if (isBinary) {
         console.warn('[server] Binary frame received before session_init — ignoring');
         return;
@@ -185,6 +187,8 @@ wss.on('connection', (ws: WebSocket) => {
       // ── Open (or resume) the study session ─────────────────
       initialized = true;
       clearTimeout(initTimeout);
+      // Spoken replies on/off: per device, so it travels with the connection.
+      setVoiceOutput(initMsg.voice_output !== false);
       openSession(ws, {
         sessionId: initMsg.session_id,
         preferences: initMsg.preferences,
@@ -194,7 +198,7 @@ wss.on('connection', (ws: WebSocket) => {
 
       // ── Register post-init message handler ────────────────
       ws.on('message', (msgData, msgIsBinary) => {
-        if (!initialized) return;
+        if (!initialized || activeWs !== ws) return; // retired connection
         const currentCtx = SessionStore.getOrThrow();
 
         if (msgIsBinary) {
@@ -211,6 +215,10 @@ wss.on('connection', (ws: WebSocket) => {
   // ── Connection teardown ────────────────────────────────────
   ws.on('close', (code, reason) => {
     clearTimeout(initTimeout);
+    if (activeWs !== ws) {
+      console.log(`[server] Retired connection closed (code=${code})`);
+      return; // a newer connection owns the session now
+    }
     const sessionId = SessionStore.get()?.sessionId ?? 'unknown';
     console.log(`[server] Connection closed — session=${sessionId} code=${code} reason=${reason.toString() || '(none)'}`);
     if (initialized) endSpeechSession();

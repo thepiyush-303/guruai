@@ -6,7 +6,8 @@
 import WebSocket from 'ws';
 import { SessionContext, ServerState, ClientMessage, ServerMessage, IncomingEventType } from './types';
 import { transition, isTransitionError } from './stateMachine';
-import { dispatchSideEffects, emitStateChange, sendJson, feedLiveStt } from './sideEffects';
+import { dispatchSideEffects, emitStateChange, sendJson, feedLiveStt, interruptSpeech, setVoiceOutput } from './sideEffects';
+import { getTts } from './gnaniTts';
 import { normalizePreferences, updateSessionPreferences } from './session';
 import { getActiveSentenceBuffer, setActiveSentenceBuffer } from './sharedState';
 import { appendTurn, touchSession } from './contextStore';
@@ -102,6 +103,39 @@ export function handleTextMessage(
       break;
     }
 
+    case 'text_input': {
+      // A typed question. Only between answers: while the student is speaking
+      // or an answer is still being generated there is nowhere to put it.
+      const text = typeof msg.text === 'string' ? msg.text.trim().slice(0, MAX_TYPED_CHARS) : '';
+      if (!text) return;
+      if (ctx.state !== ServerState.IDLE) {
+        sendError(ws, ctx, 'INVALID_STATE', 'Please wait for the current answer to finish, then send your question.', true);
+        return;
+      }
+      // The previous answer may still be playing: a new question replaces it.
+      if (getTts().isActive) interruptSpeech(ws, ctx, 'new_question');
+      ctx.turnStartedAt = Date.now();
+      ctx.speechEndAt = null;
+      ctx.firstTokenAt = null;
+      ctx.voskFirstPartialAt = null;
+      acceptUserTurn(ws, ctx, text, { duration_ms: 0 });
+      runTransition(ws, ctx, 'text_input');
+      break;
+    }
+
+    case 'set_voice_output': {
+      const on = msg.enabled !== false;
+      setVoiceOutput(on);
+      // Switching off mid-answer silences what is left of it.
+      if (!on && getTts().isActive) interruptSpeech(ws, ctx, 'voice_off');
+      break;
+    }
+
+    case 'stop_speaking': {
+      if (getTts().isActive) interruptSpeech(ws, ctx, 'stopped');
+      break;
+    }
+
     case 'tool_result': {
       // Tool results are client-side only per PRD; server handles this internally.
       // Placeholder for Phase 5.
@@ -149,6 +183,38 @@ export function handleBinaryMessage(
 }
 
 // ── Internal helpers ──────────────────────────────────────────
+
+/** A typed question is capped at this many characters. */
+const MAX_TYPED_CHARS = 2000;
+
+/**
+ * A student turn, spoken or typed: echo it to the client as the final
+ * transcript, add it to the LLM history, and persist it. (The session row is
+ * created on its first turn, so sessions nobody spoke in are never listed;
+ * its title is generated from the content once the first answer is in.)
+ */
+function acceptUserTurn(
+  ws: WebSocket,
+  ctx: SessionContext,
+  text: string,
+  meta: { duration_ms: number; detected?: string },
+): void {
+  const msg: ServerMessage = {
+    type: 'transcript_final',
+    session_id: ctx.sessionId,
+    text,
+    duration_ms: meta.duration_ms,
+    timestamp_ms: Date.now(),
+    ...(meta.detected ? { detected_language: meta.detected } : {}),
+  };
+  sendJson(ws, msg);
+  ctx.sttFinalAt = Date.now();
+
+  ctx.conversationHistory.push({ role: 'user', content: text });
+  saveSessionRow(ctx);
+  appendTurn(ctx.sessionId, 'user', text);
+  touchSession(ctx.sessionId);
+}
 
 /**
  * Run a state machine transition, dispatch side-effects, and emit
@@ -256,37 +322,18 @@ export function handleInternalEvent(
         break;
       }
 
-      // 1. Send transcript_final to browser
-      const msg: ServerMessage = {
-        type: 'transcript_final',
-        session_id: ctx.sessionId,
-        text,
-        duration_ms,
-        timestamp_ms: Date.now(),
-        ...(detected ? { detected_language: detected } : {}),
-      };
-      sendJson(ws, msg);
+      // 1–2. Show it, remember it, store it.
+      acceptUserTurn(ws, ctx, text, { duration_ms, detected });
       console.log(`[${ctx.sessionId}] transcript_final${detected ? ` [${detected}]` : ''}: "${text.slice(0, 80)}"`);
 
       // Latency: STT wall time (speech_end → transcript ready), commit → final,
       // and Gnani's own reported processing time.
-      ctx.sttFinalAt = Date.now();
-      if (ctx.speechEndAt) {
+      if (ctx.speechEndAt && ctx.sttFinalAt) {
         console.log(
           `[latency] STT: ${ctx.sttFinalAt - ctx.speechEndAt}ms wall (${duration_ms}ms after commit` +
           `${gnaniMs !== undefined ? `, gnani ${gnaniMs}ms` : ''}${via === 'rest' ? ', via REST retry' : ''})`,
         );
       }
-
-      // 2. Append user turn to conversation history for the LLM
-      ctx.conversationHistory.push({ role: 'user', content: text });
-
-      // Persist the user turn. The session row is created on its first turn, so
-      // sessions nobody spoke in are never listed. (Its title is generated from
-      // the content once the first answer is in — see titler.ts.)
-      saveSessionRow(ctx);
-      appendTurn(ctx.sessionId, 'user', text);
-      touchSession(ctx.sessionId);
 
       // 3. Transition TRANSCRIBING → LLM_STREAMING
       runTransition(ws, ctx, 'stt_final');

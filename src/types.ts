@@ -45,6 +45,9 @@ export type IncomingEventType =
   | 'switch_session'      // client starts a new session or resumes a saved one (IDLE only)
   | 'session_opener'      // internal: GuruAI speaks first when a session opens
   | 'set_notes'           // client switches study notes on/off for this session
+  | 'text_input'          // client typed a question instead of speaking it (IDLE only)
+  | 'set_voice_output'    // client switches spoken replies on/off (text-only mode)
+  | 'stop_speaking'       // client asks GuruAI to stop talking (between answers)
   | 'pcm_binary'          // internal tag for binary WS frames
   | 'stt_final'           // internal: Gnani Prisma final transcript for the utterance
   | 'stt_error'           // internal: Gnani Prisma failure / timeout
@@ -99,6 +102,8 @@ export interface SessionInitMessage {
   resume?: boolean;
   /** For a NEW session: the student-made group to save it in. */
   group_id?: string | null;
+  /** Speak the replies (default) or send text only. Per device, so per connection. */
+  voice_output?: boolean;
 }
 
 export interface SpeechStartMessage {
@@ -151,8 +156,31 @@ export interface SwitchSessionMessage {
   group_id?: string | null;
 }
 
+/** A question typed instead of spoken. Treated exactly like a final transcript. */
+export interface TextInputMessage {
+  type: 'text_input';
+  session_id: string;
+  text: string;
+}
+
+/** Spoken replies on/off for this connection (off: text only, no TTS calls). */
+export interface SetVoiceOutputMessage {
+  type: 'set_voice_output';
+  session_id: string;
+  enabled: boolean;
+}
+
+/** Stop the answer being spoken right now (the text stays). */
+export interface StopSpeakingMessage {
+  type: 'stop_speaking';
+  session_id: string;
+}
+
 export type ClientMessage =
   | SessionInitMessage
+  | TextInputMessage
+  | SetVoiceOutputMessage
+  | StopSpeakingMessage
   | SpeechStartMessage
   | SpeechEndMessage
   | VadMisfireMessage
@@ -232,7 +260,7 @@ export interface ToolCallMessage {
 export interface TtsInterruptedMessage {
   type: 'tts_interrupted';
   session_id: string;
-  reason: 'barge_in';
+  reason: 'barge_in' | 'stopped' | 'new_question' | 'voice_off';
   timestamp_ms: number;
 }
 
@@ -280,6 +308,9 @@ export interface TtsStateMessage {
   session_id: string;
   active: boolean;
   timestamp_ms: number;
+  /** On active=false: sentences spoken in full, and those that could not be spoken. */
+  spoken?: number;
+  failed?: number;
 }
 
 // GuruAI: the lesson's progress, from the session memory (sent when a session

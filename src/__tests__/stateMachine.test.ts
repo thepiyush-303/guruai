@@ -43,6 +43,16 @@ describe('IDLE state', () => {
     expectTransition(ServerState.IDLE, 'session_opener', ServerState.LLM_STREAMING, 'START_LLM_STREAM');
   });
 
+  it('text_input → LLM_STREAMING, a typed question needs no transcription', () => {
+    expectTransition(ServerState.IDLE, 'text_input', ServerState.LLM_STREAMING, 'START_LLM_STREAM');
+  });
+
+  it('text_input is not valid while the student speaks or an answer streams', () => {
+    expectInvalidTransition(ServerState.LISTENING, 'text_input');
+    expectInvalidTransition(ServerState.TRANSCRIBING, 'text_input');
+    expectInvalidTransition(ServerState.LLM_STREAMING, 'text_input');
+  });
+
   it('session_opener is not valid mid-turn', () => {
     expectInvalidTransition(ServerState.LISTENING, 'session_opener');
   });

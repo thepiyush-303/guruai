@@ -29,7 +29,9 @@ speech-to-text and **Timbre** for text-to-speech. Answers come from **Groq** or 
 
 ## Features
 
-**Talk in your language**
+**Talk — or type — in your language**
+- Speak, or type a question in the box at the bottom of the session. Typed and spoken questions are treated the same.
+- Spoken replies can be switched off (🔊 in the session, or Settings): replies then come as text only and nothing is sent to the speech service.
 - 10 Indian languages plus Hinglish: English, हिन्दी, Hinglish, বাংলা, ગુજરાતી, ಕನ್ನಡ, മലയാളം, मराठी, ਪੰਜਾਬੀ, தமிழ், తెలుగు.
 - 13 teacher voices (Timbre v3.0). Each one speaks every language, and you can hear a sample before choosing.
 - Live captions of what you are saying, if a Vosk model is installed for the language.
@@ -48,7 +50,9 @@ speech-to-text and **Timbre** for text-to-speech. Answers come from **Groq** or 
 - **Per session:** the topic, a running summary, the lesson plan (each chunk marked not yet taught, explained, understood or struggling), and what you found hard. It is reloaded whenever you reopen the session.
 - **Across sessions:** a small learner profile built from what you say about yourself, such as your name, class, interests (used for analogies) and what you find hard. You can see, delete or switch off all of it.
 
-**Sessions**
+**Sessions and navigation**
+- A home page that explains GuruAI, a compact *New session* page, and a sidebar listing every session as a link: one click opens it, and the browser's Back/Forward work (`/`, `/new`, `/s/<id>`, `/settings`).
+- Light, dark or system theme.
 - Every conversation is saved, with a title generated from what was studied (e.g. "Photosynthesis in Plants").
 - Organise sessions into your own **groups**, start a session inside a group, rename, move or delete.
 - Resume any session and carry on talking: same language, same voice, same lesson.
@@ -191,7 +195,7 @@ Everything lives in `.env`; `.env.example` documents each value. The ones that m
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PORT` | `8765` | WebSocket port (the client connects to `:8765`) |
+| `PORT` | `8765` | WebSocket port. The client connects to `:8765`; if you change it, build the client with `VITE_WS_PORT=<port> npm run build` |
 | `HTTP_PORT` | `3000` | HTTP: the built client and `/api` |
 
 **Gnani speech**
@@ -205,6 +209,7 @@ Everything lives in `.env`; `.env.example` documents each value. The ones that m
 | `GNANI_TTS_SPEED` | `1.0` | 0.85–1.15 |
 | `GNANI_STT_VAD_THRESHOLD` | `0.5` | Gnani's speech-detection sensitivity (0.45–0.55 for clean mics) |
 | `GNANI_STT_REST_URL` | Gnani REST | retry path for failed streaming utterances; empty disables it |
+| `GNANI_TTS_REST_URL` | Gnani REST | voice samples, and the second chance for a sentence the TTS socket failed to speak |
 | `VANI_VOCAB`, `VANI_VOCAB_FILE` | `vocab.txt` | subject terms to help recognition (ASCII) |
 
 **LLM**
@@ -237,22 +242,20 @@ Everything lives in `.env`; `.env.example` documents each value. The ones that m
 
 ## Using GuruAI
 
-1. **Start screen:**
-   - pick a **language** and a **voice** (click a voice to hear it in that language)
-   - optionally pick your **class** and **board**, and a **group** to save the session in
-   - or click a recent session under *Continue where you left off*
-2. **Start learning.** GuruAI greets you and asks what you want to learn. Just talk. The mic is closed while GuruAI speaks and reopens when it finishes.
-3. **Header:**
-   - **language chip:** switching language starts a new session, since each session is in one language
-   - **voice chip:** changes the voice within the session
-   - **Sessions:** opens the sidebar
-   - **Notes:** shows or hides the notes panel
-   - **Log:** event log for debugging
-4. **Sessions sidebar:**
-   - **This session:** the lesson progress card (topic, chunks, "up next") and the transcript
-   - **All sessions:** your groups and sessions. Use *New group*, *+ Session* inside a group, and the **⋯** menu to rename, move or delete.
-   - **About you:** what GuruAI remembers about you, with delete buttons and a switch to stop remembering
-5. **Notes panel:** notes appear as GuruAI teaches. Use the switch to pause them, *Download PDF* for the file, and *Make notes in new sessions* for the default. Saying "no notes" or "make notes" works too.
+1. **Home** (`/`) explains what GuruAI does. Click **Start a new session**, or **Continue** your last one.
+2. **New session** (`/new`): pick a **language**, a **voice** (click one to hear it in that language; filter by Female/Male), optionally your **class**, **board** and a **group**, then **Start session**.
+3. **The session** (`/s/<id>`) is the voice teacher, and the only screen with a microphone:
+   - GuruAI greets you and asks what you want to learn. **Talk**, or **type** in the box at the bottom (Enter sends, Shift+Enter adds a line).
+   - The mic button turns listening on/off. The mic is closed while GuruAI speaks and reopens when it finishes.
+   - **■ Stop** silences the current answer; typing a new question also replaces it.
+   - **🔊** switches spoken replies off/on (text only). The choice is remembered on this device.
+   - Header: the session's title and language, the **voice** (change it between answers, ▶ to hear it), **Notes**, and **End** (back to Home; the session is saved).
+4. **Side panel** (beside the lesson on wide screens, a slide-over on narrow ones):
+   - **Notes:** written as GuruAI teaches. The switch pauses them for this session, *Download PDF* gives the file, and *Make notes in new sessions too* sets the default. Saying "no notes" / "make notes" works too.
+   - **Lesson:** the lesson plan (topic, chunks with their status, "up next") and a summary so far.
+   - **Log:** connection, speech and timing events (turn it on in Settings › Developer).
+5. **Sidebar:** *New session*, search, **Groups** (the **+** makes one; a group's **⋯** has *New session here*, rename, delete) and **Recent** sessions (each row's **⋯**: rename, move to a group, delete). At the bottom: **Settings** and the theme switch. On a phone it opens from the ☰ button.
+6. **Settings** (`/settings`): theme, spoken replies, notes for new sessions, **About you** (what GuruAI remembers, with delete buttons and a switch to stop remembering), and the developer log.
 
 ---
 
@@ -268,7 +271,8 @@ Everything lives in `.env`; `.env.example` documents each value. The ones that m
 │   ├── session.ts                sessions, preferences, prompt refresh
 │   ├── sessionLifecycle.ts       open/resume a session, opener, initial pushes
 │   ├── gnaniStt.ts               Prisma streaming client (pacing, commit, REST retry)
-│   ├── gnaniTts.ts               Timbre streaming client (serial queue, activity)
+│   ├── gnaniTts.ts               Timbre streaming client (serial queue, accounting, REST second chance)
+│   ├── gnaniTtsRest.ts           one-shot Timbre REST synthesis (samples, retries)
 │   ├── ttsFraming.ts             TTS audio → binary WebSocket frames
 │   ├── sentenceBuffer.ts         LLM tokens → speakable sentences
 │   ├── groqStream.ts, geminiStream.ts   streamed answers
@@ -284,16 +288,22 @@ Everything lives in `.env`; `.env.example` documents each value. The ones that m
 │   ├── voskProcess.ts            live-caption subprocess
 │   ├── util/serialJobs.ts        one-at-a-time background jobs per session
 │   ├── scripts/gnaniSmoke.ts     live API check
+│   ├── scripts/ttsLongSmoke.ts   speak a long answer through the real Timbre socket, per-sentence report
 │   └── __tests__/                Jest suites
 ├── client/                       React + Vite app
 │   └── src/
-│       ├── App.tsx               state, message handling, layout
+│       ├── App.tsx               the shell: sidebar + current page
+│       ├── router.ts             /, /new, /s/<id>, /settings (pushState, no dependency)
+│       ├── library.ts            sessions, groups, voices (shared through context)
+│       ├── settings.ts           per-device choices: theme, spoken replies, panels
 │       ├── protocol.ts           wire types (mirrors src/types.ts)
 │       ├── api.ts                HTTP API calls
-│       ├── hooks/                useWsClient, useVadMic, useAudioPlayback, useOrbLevel
-│       └── components/           SessionSetup, VoicePicker, Captions, Orb, Controls,
-│                                 HistorySidebar, SessionsPanel, SessionList, LessonProgress,
-│                                 ProfilePanel, NotesPanel, LogSidebar
+│       ├── pages/                HomePage, NewSessionPage, SessionPage, SettingsPage
+│       ├── hooks/                useVoiceSession (one session on one socket), useWsClient,
+│       │                         useVadMic, useAudioPlayback, useOrbLevel, useMediaQuery
+│       ├── components/           Sidebar, Thread, Composer, SidePanel, NotesPanel, VoicePicker,
+│       │                         LessonProgress, ProfilePanel, Orb, Icon, Link
+│       └── styles/               tokens (light/dark), base, shell, home, forms, session, panel
 ├── vosk_server.py                Vosk live-caption recognizer (stdin PCM → JSON)
 ├── vocab.txt                     recognition hints
 ├── data/                         runtime data (git-ignored): vani.db, notes/, voice-previews/
@@ -329,20 +339,27 @@ Mutations require a JSON body or a non-simple method, so other websites cannot t
 
 | Direction | Message | Purpose |
 |---|---|---|
-| C→S | `session_init` | start: `session_id`, `preferences {language, voice, grade, board}`, `resume`, `group_id` |
+| C→S | `session_init` | start: `session_id`, `preferences {language, voice, grade, board}`, `resume`, `group_id`, `voice_output` |
 | C→S | `speech_start`, `speech_end`, `vad_misfire` | turn boundaries from the browser VAD |
 | C→S | `switch_session` | new session (e.g. new language) or resume one, on the same connection |
 | C→S | `update_preferences` | voice / class / board within a session |
 | C→S | `set_notes` | notes on/off for this session |
+| C→S | `text_input` | a typed question (between answers; replaces speech still playing) |
+| C→S | `set_voice_output` | spoken replies on/off (off: text only, no TTS calls) |
+| C→S | `stop_speaking` | silence the answer being spoken |
 | S→C | `session_ack`, `preferences_ack`, `history_load` | session opened; effective settings; saved transcript |
 | S→C | `state_change`, `transcript_partial`, `transcript_final`, `llm_token`, `turn_complete` | the turn as it happens |
-| S→C | `tts_state` | GuruAI started or finished speaking (the client gates the mic) |
+| S→C | `tts_state` | GuruAI started or finished speaking (the client gates the mic); on finish, `spoken` / `failed` sentence counts |
+| S→C | `tts_interrupted` | speech stopped (`barge_in`, `stopped`, `new_question`, `voice_off`): drop buffered audio |
 | S→C | `session_context` | lesson progress (topic, chunks, next) |
 | S→C | `notes_update` | the session's notes and PDF availability |
 | S→C | `session_updated` | a generated title |
 | S→C | `error` | with a code and a readable message |
 
 Full message shapes are in `src/types.ts`, mirrored in `client/src/protocol.ts`.
+
+One session is served at a time. A new connection (another session page, a reload) takes over and the
+previous connection is closed with code `4000`.
 
 ---
 
@@ -362,14 +379,14 @@ Full message shapes are in `src/types.ts`, mirrored in `client/src/protocol.ts`.
 ## Testing
 
 ```bash
-npm test                         # server: Jest (176 tests)
+npm test                         # server: Jest (186 tests)
 npx tsc --noEmit                 # server type-check
 cd client && npm run build       # client type-check + build
 cd client && npx eslint .        # client lint
 ```
 
 **What the tests cover:**
-- **Speech clients:** the Gnani STT and TTS clients run against local mock WebSocket servers, covering framing, pacing, commit handling, the REST retry, config errors, the serial TTS queue and cancellation.
+- **Speech clients:** the Gnani STT and TTS clients run against local mock WebSocket servers, covering framing, pacing, commit handling, the REST retry, config errors, the serial TTS queue, cancellation, Timbre's double `complete`, and the REST second chance / split for sentences the socket fails to speak.
 - **Core logic:** the state machine, sentence splitting, the teaching prompt, session memory, the learner profile and its filters, the memory updater (mocked LLM), sessions, groups, titles and the HTTP API.
 - **Notes and PDF:** the notebook patcher and the notes agent. Real PDF renders through system Chrome are skipped automatically if there is no browser.
 
@@ -378,6 +395,7 @@ cd client && npx eslint .        # client lint
 ```bash
 npm run smoke:gnani -- tts "<text>" <language>     # Timbre: writes data/smoke-tts.pcm
 npm run smoke:gnani -- stt <file.wav|file.pcm> <language>   # Prisma: prints the transcript
+npm run smoke:tts-long [-- <language> <voice>]     # a long answer through Timbre: every sentence, seconds of audio each
 ```
 
 ---
@@ -395,17 +413,18 @@ npm run smoke:gnani -- stt <file.wav|file.pcm> <language>   # Prisma: prints the
 | Boxes instead of letters in the PDF | install the Noto fonts for that script (`fonts-noto`) |
 | `could not open the mic` | allow microphone access; the page must be `localhost` or HTTPS |
 | Voice sample doesn't play | the picker shows Gnani's error; usually the API key, or a voice from the wrong Timbre model |
-| "Server already has an active session" | only one tab can be connected; close the other one |
+| Session shows "Disconnected" | another tab or page opened a session (one at a time); click **Reconnect** |
+| The end of a long answer is not spoken | the server log's `[gnani-tts] queue drained — spoken N/N` should show every sentence; `npm run smoke:tts-long` checks the voice service on its own |
 | Notes don't appear | check the switch in the Notes panel; notes skip greetings and small talk; check the server log for `[notes]` |
 
 The server log prefixes each subsystem (`[gnani-stt]`, `[gnani-tts]`, `[memory]`, `[notes]`, `[pdf]`,
-`[titler]`, `[latency]`). The **Log** button in the app shows the client side.
+`[titler]`, `[latency]`). The client side is in the session's **Log** tab (Settings › Developer).
 
 ---
 
 ## Further documentation
 
 - [`.claude/guruai-design.md`](.claude/guruai-design.md): the full design. It covers architecture, the Gnani API as used, every phase in detail, risks and verification.
-- [`.claude/decisions.md`](.claude/decisions.md): the decisions log (ADRs G1–G18): what was decided and why.
+- [`.claude/decisions.md`](.claude/decisions.md): the decisions log (ADRs G1–G21): what was decided and why.
 - [`.claude/todo.md`](.claude/todo.md): the phase tracker.
 - [`PROJECT_DEEPDIVE_PRD.md`](PROJECT_DEEPDIVE_PRD.md): the original voice-pipeline specification (Vani, the project GuruAI grew from).

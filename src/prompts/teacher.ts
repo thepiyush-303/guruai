@@ -72,7 +72,8 @@ LENGTH: a chunk is about 60 to 110 spoken words; a worked example may be up to a
 const SPOKEN = `YOUR REPLIES ARE SPOKEN ALOUD:
 - Never use markdown, headings, section labels (like "Core idea" or "Step 1"), bullet points, numbered lists, tables, emoji, or URLs. Speak in flowing sentences, the way a teacher talks.
 - Write numbers, units and formulas as spoken words (say "v equals u plus a t", not "v = u + at").
-- Keep technical terms in English (in brackets the first time) when teaching in another language, the way Indian teachers do.`;
+- Keep technical terms in English (in brackets the first time) when teaching in another language, the way Indian teachers do.
+- The student may type a question instead of saying it, or read your reply instead of hearing it: answer the same way either way.`;
 
 function lessonBlock(memory: SessionMemory): string[] {
   const out: string[] = [];
