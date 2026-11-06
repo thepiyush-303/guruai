@@ -12,10 +12,26 @@ import { OpenRequest, SessionStore, openSessionContext } from './session';
 import { applyPreferences, emitInternal, endSpeechSession, sendJson } from './sideEffects';
 import { currentView } from './memory/memoryUpdater';
 import { viewOf, type SessionContextView } from './memory/sessionMemory';
+import { loadNotes, notesDefault, type NotesState } from './notes/notesAgent';
+import { pdfAvailable, pdfUnavailableReason } from './notes/pdf';
 import { loadSessionTurns, getSession, upsertSession } from './contextStore';
 
 const SERVER_VERSION = '0.3.0';
 const OPENER_DELAY_MS = Number(process.env.OPENER_DELAY_MS ?? 400);
+
+/** The session's study notes, for the notes panel. */
+export function sendNotesUpdate(ws: WebSocket, sessionId: string, state: NotesState): void {
+  const { subject, topic, version, sections } = state.notebook;
+  sendJson(ws, {
+    type: 'notes_update',
+    session_id: sessionId,
+    enabled: state.enabled,
+    default_enabled: notesDefault(),
+    notebook: { subject, topic, version, sections },
+    pdf_available: pdfAvailable(),
+    pdf_reason: pdfUnavailableReason(),
+  });
+}
 
 /** Lesson progress for the client's sidebar. */
 export function sendSessionContext(ws: WebSocket, sessionId: string, view: SessionContextView = viewOf({
@@ -76,6 +92,7 @@ export function openSession(ws: WebSocket, req: OpenRequest): SessionContext {
   });
 
   sendSessionContext(ws, ctx.sessionId, currentView(ctx.sessionId));
+  sendNotesUpdate(ws, ctx.sessionId, loadNotes(ctx.sessionId));
 
   // GuruAI speaks first: a greeting, or a welcome back with a recap. Slightly
   // delayed so the client has applied the acks and opened its mic gate state.

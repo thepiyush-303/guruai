@@ -20,6 +20,7 @@ import { SessionStore, refreshContext } from './session';
 import { openerInstruction } from './prompts/teacher';
 import { loadProfile } from './memory/learnerProfile';
 import { loadSessionMemory } from './memory/sessionMemory';
+import { loadNotes } from './notes/notesAgent';
 
 // ── Sentence buffer & internal event callback ─────────────────
 
@@ -308,7 +309,7 @@ function triggerLLMStream(ctx: SessionContext): void {
     ctx.openerActive = true;
     ctx.conversationHistory.push({
       role: 'user',
-      content: openerInstruction(kind, loadProfile(), loadSessionMemory(ctx.sessionId).memory),
+      content: openerInstruction(kind, loadProfile(), loadSessionMemory(ctx.sessionId).memory, loadNotes(ctx.sessionId).enabled),
       ephemeral: true,
     });
   }

@@ -11,6 +11,8 @@
 // ============================================================
 
 import { getSession, getSessionTurnsAfter } from '../contextStore';
+import { SerialJobs } from '../util/serialJobs';
+import { loadNotes, setNotesEnabled } from '../notes/notesAgent';
 import { getLanguage } from '../languages';
 import { completeJson, hasBackgroundLlm } from '../llmText';
 import { LIST_KEYS, SCALAR_KEYS, loadProfile, memoryEnabled, mergeProfileFacts, renderProfile } from './learnerProfile';
@@ -29,8 +31,7 @@ let completer: JsonCompleter = completeJson;
 let hasLlm: () => boolean = hasBackgroundLlm;
 let listener: UpdateListener | null = null;
 
-const running = new Set<string>();
-const again = new Set<string>();
+const jobs = new SerialJobs((sessionId) => runOnce(sessionId));
 
 /** Tests: replace the LLM. */
 export function setMemoryCompleter(fn: JsonCompleter, available: () => boolean = () => true): void {
@@ -51,19 +52,7 @@ export function updateMemoryBackground(sessionId: string): void {
 /** Run (or schedule) an update; resolves when this session's runs are done. */
 export async function updateMemory(sessionId: string): Promise<void> {
   if (!hasLlm()) return;
-  if (running.has(sessionId)) {
-    again.add(sessionId);
-    return;
-  }
-  running.add(sessionId);
-  try {
-    do {
-      again.delete(sessionId);
-      await runOnce(sessionId);
-    } while (again.has(sessionId));
-  } finally {
-    running.delete(sessionId);
-  }
+  await jobs.trigger(sessionId);
 }
 
 async function runOnce(sessionId: string): Promise<void> {
@@ -88,6 +77,12 @@ async function runOnce(sessionId: string): Promise<void> {
   const memory = normalizeSessionMemory(result.memory ?? result, prev);
   saveSessionMemory(sessionId, memory, lastId);
   const changedFacts = mergeProfileFacts(result.profile_facts, sessionId);
+
+  // The student asked to start or stop notes (by voice, in any language).
+  if (result.notes_request === 'on' || result.notes_request === 'off') {
+    const on = result.notes_request === 'on';
+    if (loadNotes(sessionId).enabled !== on) setNotesEnabled(sessionId, on);
+  }
 
   const lesson = memory.lesson ? `${memory.lesson.chunks.length} chunks, next ${memory.lesson.next + 1}` : 'no lesson';
   console.log(
@@ -126,7 +121,7 @@ ${profileLines.length ? profileLines.join('\n') : '(nothing yet)'}
 NEW TURNS:
 ${transcript}
 
-Return ONE JSON object: {"memory": {...}, "profile_facts": [...]}
+Return ONE JSON object: {"memory": {...}, "profile_facts": [...], "notes_request": "on" | "off" | null}
 
 "memory" has exactly these fields (write them in English):
 - "topic": the subject being learned now, 2–5 words, or null if none yet.
@@ -139,7 +134,9 @@ Return ONE JSON object: {"memory": {...}, "profile_facts": [...]}
 - "student": {"understood": [...], "struggling": [...], "misconceptions": [...]} — short phrases, most recent last, max 5 each.
 - "last_offer": what the teacher's LAST message ended with: "example" (offered an example), "next_chunk" (offered to move on), "quiz" (asked a question), or null.
 
-${factsRule}`;
+${factsRule}
+
+"notes_request": "off" if the STUDENT asked in the new turns to stop or not make notes (e.g. "no notes", "notes mat banao", "stop writing notes"); "on" if they asked to make or start notes again; otherwise null.`;
 }
 
 /** The current view of a session's memory, for the client. */

@@ -164,6 +164,13 @@ export function initContextStore(dbPath = process.env.VANI_DB_PATH ?? 'data/vani
         upto_turn_id  INTEGER NOT NULL DEFAULT 0,
         updated_ts    INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS notebooks (
+        session_id    TEXT    PRIMARY KEY,
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        doc           TEXT    NOT NULL,
+        upto_turn_id  INTEGER NOT NULL DEFAULT 0,
+        updated_ts    INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS learner_profile (
         key                TEXT    PRIMARY KEY,
         value              TEXT    NOT NULL,
@@ -342,6 +349,7 @@ export function deleteSession(id: string): boolean {
   try {
     db.prepare('DELETE FROM turns WHERE session_id = ?').run(id);
     db.prepare('DELETE FROM session_context WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM notebooks WHERE session_id = ?').run(id);
     const r = db.prepare('DELETE FROM sessions WHERE id = ?').run(id) as { changes: number };
     return r.changes > 0;
   } catch (err) {
@@ -620,5 +628,41 @@ export function setMeta(key: string, value: string): void {
     db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
   } catch (err) {
     console.error('[context] failed to save setting:', err);
+  }
+}
+
+// ── Notebooks (JSON; validated in notes/notebook.ts) ───────────
+
+export interface NotebookRow {
+  enabled: number;
+  doc: string;
+  upto_turn_id: number;
+  updated_ts: number;
+}
+
+export function getNotebookRow(sessionId: string): NotebookRow | null {
+  if (!enabled || !db) return null;
+  try {
+    return (
+      (db.prepare('SELECT enabled, doc, upto_turn_id, updated_ts FROM notebooks WHERE session_id = ?').get(sessionId) as
+        | NotebookRow
+        | undefined) ?? null
+    );
+  } catch (err) {
+    console.error('[context] failed to read notebook:', err);
+    return null;
+  }
+}
+
+export function saveNotebookRow(sessionId: string, isEnabled: boolean, doc: string, uptoTurnId: number): void {
+  if (!enabled || !db) return;
+  try {
+    db.prepare(
+      `INSERT INTO notebooks (session_id, enabled, doc, upto_turn_id, updated_ts) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET enabled = excluded.enabled, doc = excluded.doc,
+         upto_turn_id = excluded.upto_turn_id, updated_ts = excluded.updated_ts`,
+    ).run(sessionId, isEnabled ? 1 : 0, doc, uptoTurnId, Date.now());
+  } catch (err) {
+    console.error('[context] failed to save notebook:', err);
   }
 }

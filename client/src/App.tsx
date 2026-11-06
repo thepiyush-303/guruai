@@ -15,6 +15,7 @@ import { HistorySidebar } from './components/HistorySidebar.tsx';
 import { LogSidebar } from './components/LogSidebar.tsx';
 import { Orb } from './components/Orb.tsx';
 import { SessionSetup } from './components/SessionSetup.tsx';
+import { NotesPanel } from './components/NotesPanel.tsx';
 import * as api from './api.ts';
 import type { SessionsSnapshot } from './api.ts';
 import type { SessionActions } from './components/SessionList.tsx';
@@ -38,6 +39,7 @@ import {
   type ServerMessage,
   type ServerState,
   type LessonView,
+  type NotesState,
   type SessionGroup,
   type SessionSummary,
   type VoiceOption,
@@ -63,6 +65,20 @@ function loadPrefs(): Preferences {
   }
   return { language: 'en' };
 }
+
+/** Whether the notes panel is shown (per device). Open by default. */
+const NOTES_OPEN_KEY = 'guruai.notesOpen';
+
+function loadNotesOpen(): boolean {
+  try {
+    return window.localStorage.getItem(NOTES_OPEN_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+/** How long a newly added note stays highlighted. */
+const FRESH_MS = 2500;
 
 function savePrefs(prefs: Preferences): void {
   try {
@@ -107,6 +123,19 @@ export default function App() {
   const [ttsActive, setTtsActive] = useState(false);
   // Lesson progress of the open session (from the server's session memory).
   const [lesson, setLesson] = useState<LessonView | null>(null);
+  // The open session's study notes, and the block ids just added (glow briefly).
+  const [notes, setNotes] = useState<NotesState | null>(null);
+  const [freshNotes, setFreshNotes] = useState<ReadonlySet<string>>(new Set());
+  const notesRef = useRef<NotesState | null>(null);
+  const freshTimerRef = useRef<number | null>(null);
+  const [notesOpen, setNotesOpen] = useState(loadNotesOpen);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(NOTES_OPEN_KEY, String(notesOpen));
+    } catch {
+      /* storage blocked */
+    }
+  }, [notesOpen]);
 
   // Stage scroll-back: the last few settled turns per side (Fix #3).
   const [userHistory, setUserHistory] = useState<string[]>([]);
@@ -217,6 +246,33 @@ export default function App() {
             setLesson({ topic: msg.topic, gist: msg.gist, chunks: msg.chunks, next: msg.next });
           }
           break;
+        case 'notes_update': {
+          if (msg.session_id !== sessionIdRef.current) break;
+          const next: NotesState = {
+            sessionId: msg.session_id,
+            enabled: msg.enabled,
+            defaultEnabled: msg.default_enabled,
+            notebook: msg.notebook,
+            pdfAvailable: msg.pdf_available,
+            pdfReason: msg.pdf_reason,
+          };
+          // Highlight blocks that are new since the last update of THIS session
+          // (not everything on first load).
+          const prev = notesRef.current;
+          if (prev && prev.sessionId === next.sessionId) {
+            const old = new Set(prev.notebook.sections.flatMap((s) => s.blocks.map((b) => b.id)));
+            const added = next.notebook.sections.flatMap((s) => s.blocks.map((b) => b.id)).filter((id) => !old.has(id));
+            if (added.length > 0) {
+              setFreshNotes(new Set(added));
+              if (freshTimerRef.current !== null) window.clearTimeout(freshTimerRef.current);
+              freshTimerRef.current = window.setTimeout(() => setFreshNotes(new Set()), FRESH_MS);
+              log(`notes: +${added.length}`, 'in');
+            }
+          }
+          notesRef.current = next;
+          setNotes(next);
+          break;
+        }
         case 'session_updated':
           if (msg.session_id === sessionIdRef.current) setSessionTitle(msg.title);
           refreshSessions();
@@ -266,6 +322,8 @@ export default function App() {
           // GuruAI speaks first in a new session; its caption must pace to that audio.
           setAudioStarted(false);
           setLesson(null);
+          setNotes(null);
+          notesRef.current = null;
           if (msg.turns.length > 0) log(`loaded ${msg.turns.length} saved turn(s)`, 'in');
           break;
         }
@@ -407,6 +465,16 @@ export default function App() {
     onDeleteGroup: async (id) => applySnapshot(await api.deleteGroup(id)),
   };
 
+  const toggleNotes = (enabled: boolean) => {
+    ws.send({ type: 'set_notes', session_id: sessionIdRef.current, enabled });
+  };
+  const changeNotesDefault = (enabled: boolean) => {
+    api
+      .setNotesDefault(enabled)
+      .then(() => setNotes((n) => (n ? { ...n, defaultEnabled: enabled } : n)))
+      .catch((err: Error) => log(`could not save the notes default: ${err.message}`, 'err'));
+  };
+
   // A new voice continues the same session.
   const changeVoice = (voice: string) => {
     setPrefs((p) => ({ ...p, voice }));
@@ -460,6 +528,9 @@ export default function App() {
         <button className="rail__toggle" onClick={() => setHistoryOpen((o) => !o)} aria-expanded={historyOpen}>
           Sessions
         </button>
+        <button className="rail__toggle" onClick={() => setNotesOpen((o) => !o)} aria-expanded={notesOpen}>
+          Notes{freshNotes.size > 0 && !notesOpen ? ' •' : ''}
+        </button>
         <button className="rail__toggle" onClick={() => setLogsOpen((o) => !o)} aria-expanded={logsOpen}>
           Log
         </button>
@@ -482,6 +553,7 @@ export default function App() {
         </div>
       )}
 
+      <div className={notesOpen && connected ? 'workspace has-notes' : 'workspace'}>
       <main className="stage" aria-hidden={!connected}>
         <TranscriptSide variant="user" label="You" history={userHistory}>
           <UserCaption text={userText} final={userFinal} placeholder={placeholder} />
@@ -493,6 +565,16 @@ export default function App() {
           <AssistantCaption key={replyId} text={assistantText} sources={sources} audioStarted={audioStarted} remainingMs={remainingMs} />
         </TranscriptSide>
       </main>
+      {notesOpen && connected && (
+        <NotesPanel
+          notes={notes}
+          fresh={freshNotes}
+          onToggle={toggleNotes}
+          onDefaultChange={changeNotesDefault}
+          onClose={() => setNotesOpen(false)}
+        />
+      )}
+      </div>
 
       <footer className="foot">
         <Controls

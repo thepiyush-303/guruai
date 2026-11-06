@@ -10,6 +10,8 @@
 //   GET    /api/profile                          what GuruAI remembers about the student
 //   DELETE /api/profile[/:key][?item=]           forget everything / one fact / one list item
 //   PATCH  /api/settings      {memory_enabled}   switch remembering personal facts on/off
+//   GET    /api/notes/:id                        a session's study notes (JSON)
+//   GET    /api/notes/:id/pdf                    the notes as a PDF download
 //   GET    /api/voices                           Timbre voices for the configured model
 //   GET    /api/voice-preview?voice=&language=   a short spoken sample (audio/wav)
 //
@@ -30,6 +32,10 @@ import { SessionStore } from './session';
 import { defaultVoice, isVoice, ttsModel, voicesForModel } from './voices';
 import { getVoicePreview, PreviewError } from './voicePreview';
 import { forgetEverything, forgetProfileFact, loadProfile, memoryEnabled, setMemoryEnabled } from './memory/learnerProfile';
+import { loadNotes, notesDefault, setNotesDefault } from './notes/notesAgent';
+import { deleteSessionPdf, pdfAvailable, pdfForDownload, pdfUnavailableReason } from './notes/pdf';
+import { isValidSessionId } from './session';
+import * as fs from 'fs';
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -89,6 +95,7 @@ async function sessionsRoute(req: http.IncomingMessage, res: http.ServerResponse
       throw new HttpError(409, 'This session is open. Switch to another session before deleting it.');
     }
     deleteSession(id);
+    deleteSessionPdf(id);
     json(res, 200, snapshot());
     return;
   }
@@ -124,7 +131,37 @@ async function groupsRoute(req: http.IncomingMessage, res: http.ServerResponse, 
 }
 
 function profileSnapshot() {
-  return { memory_enabled: memoryEnabled(), profile: loadProfile() };
+  return { memory_enabled: memoryEnabled(), notes_default: notesDefault(), profile: loadProfile() };
+}
+
+async function notesRoute(req: http.IncomingMessage, res: http.ServerResponse, id: string, sub: string | undefined): Promise<void> {
+  if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed');
+  if (!isValidSessionId(id) || !getSession(id)) throw new HttpError(404, 'No such session');
+
+  if (sub === undefined) {
+    const { enabled, notebook } = loadNotes(id);
+    json(res, 200, { enabled, notebook, pdf_available: pdfAvailable(), pdf_reason: pdfUnavailableReason() });
+    return;
+  }
+  if (sub !== 'pdf') throw new HttpError(404, 'Not found');
+  if (!pdfAvailable()) throw new HttpError(503, pdfUnavailableReason() ?? 'PDF is unavailable');
+
+  let out: Awaited<ReturnType<typeof pdfForDownload>>;
+  try {
+    out = await pdfForDownload(id);
+  } catch (err) {
+    throw new HttpError(503, pdfUnavailableReason() ?? `Could not make the PDF: ${(err as Error).message}`);
+  }
+  if (!out) throw new HttpError(404, 'There are no notes in this session yet');
+  const data = fs.readFileSync(out.file);
+  const ascii = out.filename.replace(/[^\x20-\x7e]/g, '_');
+  res.writeHead(200, {
+    'Content-Type': 'application/pdf',
+    'Content-Length': data.length,
+    'Content-Disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(out.filename)}`,
+    'Cache-Control': 'no-store',
+  });
+  res.end(data);
 }
 
 async function profileRoute(req: http.IncomingMessage, res: http.ServerResponse, key: string | null, item: string | null): Promise<void> {
@@ -146,8 +183,12 @@ export async function handleApi(req: http.IncomingMessage, res: http.ServerRespo
   const parts = url.pathname.split('/').filter(Boolean); // ['api', resource, id?]
 
   try {
-    if (parts.length > 3) throw new HttpError(404, 'Not found');
-    const [, resource, id] = parts;
+    if (parts.length > 4 || (parts.length === 4 && parts[1] !== 'notes')) throw new HttpError(404, 'Not found');
+    const [, resource, id, sub] = parts;
+
+    if (resource === 'notes' && id) {
+      return await notesRoute(req, res, decodeURIComponent(id), sub);
+    }
 
     if (resource === 'sessions') {
       if (id) return await sessionsRoute(req, res, decodeURIComponent(id));
@@ -167,8 +208,14 @@ export async function handleApi(req: http.IncomingMessage, res: http.ServerRespo
     if (resource === 'settings' && !id) {
       if (req.method !== 'PATCH') throw new HttpError(405, 'Method not allowed');
       const body = await readJson(req);
-      if (typeof body.memory_enabled !== 'boolean') throw new HttpError(400, 'memory_enabled must be true or false');
-      setMemoryEnabled(body.memory_enabled);
+      if ('memory_enabled' in body) {
+        if (typeof body.memory_enabled !== 'boolean') throw new HttpError(400, 'memory_enabled must be true or false');
+        setMemoryEnabled(body.memory_enabled);
+      }
+      if ('notes_default' in body) {
+        if (typeof body.notes_default !== 'boolean') throw new HttpError(400, 'notes_default must be true or false');
+        setNotesDefault(body.notes_default);
+      }
       json(res, 200, profileSnapshot());
       return;
     }

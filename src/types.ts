@@ -44,6 +44,7 @@ export type IncomingEventType =
   | 'update_preferences'  // client changes voice / class / board (IDLE only)
   | 'switch_session'      // client starts a new session or resumes a saved one (IDLE only)
   | 'session_opener'      // internal: GuruAI speaks first when a session opens
+  | 'set_notes'           // client switches study notes on/off for this session
   | 'pcm_binary'          // internal tag for binary WS frames
   | 'stt_final'           // internal: Gnani Prisma final transcript for the utterance
   | 'stt_error'           // internal: Gnani Prisma failure / timeout
@@ -133,6 +134,13 @@ export interface UpdatePreferencesMessage {
   preferences: Partial<SessionPreferences>;
 }
 
+/** Switch study notes on/off for the current session. */
+export interface SetNotesMessage {
+  type: 'set_notes';
+  session_id: string;
+  enabled: boolean;
+}
+
 /** Leave the current session for a new one (e.g. a new language) or a saved one. */
 export interface SwitchSessionMessage {
   type: 'switch_session';
@@ -150,7 +158,8 @@ export type ClientMessage =
   | VadMisfireMessage
   | ToolResultMessage
   | UpdatePreferencesMessage
-  | SwitchSessionMessage;
+  | SwitchSessionMessage
+  | SetNotesMessage;
 
 // ── Server → Client JSON Messages (PRD §3.3.2) ───────────────
 
@@ -284,6 +293,23 @@ export interface SessionContextMessage {
   next: number;
 }
 
+// GuruAI: the session's study notes (sent on open, on every change, on toggle).
+export interface NotesUpdateMessage {
+  type: 'notes_update';
+  session_id: string;
+  enabled: boolean;
+  /** Whether new sessions start with notes on. */
+  default_enabled: boolean;
+  notebook: {
+    subject: string | null;
+    topic: string | null;
+    version: number;
+    sections: Array<{ id: string; heading: string; blocks: Array<{ id: string; kind: string; text: string; latex?: string }> }>;
+  };
+  pdf_available: boolean;
+  pdf_reason: string | null;
+}
+
 // GuruAI: a session's metadata changed (e.g. its title was generated).
 export interface SessionUpdatedMessage {
   type: 'session_updated';
@@ -306,7 +332,8 @@ export type ServerMessage =
   | PreferencesAckMessage
   | TtsStateMessage
   | SessionUpdatedMessage
-  | SessionContextMessage;
+  | SessionContextMessage
+  | NotesUpdateMessage;
 
 // ── Session Context ───────────────────────────────────────────
 

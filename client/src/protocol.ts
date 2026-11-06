@@ -102,6 +102,31 @@ export interface LessonView {
   next: number;
 }
 
+/** One item of the study notes. */
+export interface NoteBlock {
+  id: string;
+  kind: 'point' | 'definition' | 'formula' | 'example' | 'tip' | 'question' | string;
+  text: string;
+  latex?: string;
+}
+
+export interface Notebook {
+  subject: string | null;
+  topic: string | null;
+  version: number;
+  sections: Array<{ id: string; heading: string; blocks: NoteBlock[] }>;
+}
+
+/** The open session's notes, as last sent by the server. */
+export interface NotesState {
+  sessionId: string;
+  enabled: boolean;
+  defaultEnabled: boolean;
+  notebook: Notebook;
+  pdfAvailable: boolean;
+  pdfReason: string | null;
+}
+
 /** What GuruAI remembers about the student (GET /api/profile). */
 export interface LearnerProfile {
   name?: string;
@@ -173,7 +198,16 @@ export type ServerMessage =
   | { type: 'preferences_ack'; session_id: string; preferences: Preferences; live_captions: boolean; tts_voice: string }
   | { type: 'tts_state'; session_id: string; active: boolean; timestamp_ms: number }
   | { type: 'session_updated'; session_id: string; title: string | null }
-  | ({ type: 'session_context'; session_id: string } & LessonView);
+  | ({ type: 'session_context'; session_id: string } & LessonView)
+  | {
+      type: 'notes_update';
+      session_id: string;
+      enabled: boolean;
+      default_enabled: boolean;
+      notebook: Notebook;
+      pdf_available: boolean;
+      pdf_reason: string | null;
+    };
 
 export type ClientMessage =
   | {
@@ -189,6 +223,7 @@ export type ClientMessage =
     }
   | { type: 'update_preferences'; session_id: string; preferences: Partial<Preferences> }
   | { type: 'switch_session'; session_id: string; preferences: Preferences; resume: boolean; group_id: string | null }
+  | { type: 'set_notes'; session_id: string; enabled: boolean }
   | { type: 'speech_start'; session_id: string; timestamp_ms: number }
   | { type: 'speech_end'; session_id: string; duration_ms: number; timestamp_ms: number }
   | { type: 'vad_misfire'; session_id: string; timestamp_ms: number };

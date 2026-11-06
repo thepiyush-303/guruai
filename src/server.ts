@@ -13,7 +13,9 @@ import { SessionStore } from './session';
 import { handleTextMessage, handleBinaryMessage, handleInternalEvent } from './messageHandler';
 import { initSpeechServices, endSpeechSession, stopSpeechServices } from './sideEffects';
 import { initContextStore } from './contextStore';
-import { openSession, sendSessionContext } from './sessionLifecycle';
+import { openSession, sendNotesUpdate, sendSessionContext } from './sessionLifecycle';
+import { onNotesChanged } from './notes/notesAgent';
+import { closePdfBrowser, schedulePdf } from './notes/pdf';
 import { onMemoryUpdated } from './memory/memoryUpdater';
 import { handleApi } from './httpApi';
 import { onSessionTitled, titleBacklog } from './titler';
@@ -38,6 +40,11 @@ const MIME_TYPES: Record<string, string> = {
   '.svg':  'image/svg+xml',
   '.wasm': 'application/wasm',
   '.onnx': 'application/octet-stream',
+  '.woff2': 'font/woff2',   // KaTeX fonts for formulas in the notes
+  '.woff':  'font/woff',
+  '.ttf':   'font/ttf',
+  '.png':   'image/png',
+  '.json':  'application/json',
 };
 
 const httpServer = http.createServer((req, res) => {
@@ -95,6 +102,14 @@ onMemoryUpdated((sessionId, view) => {
   const ws = activeWs;
   if (ws && ws.readyState === WebSocket.OPEN && SessionStore.get()?.sessionId === sessionId) {
     sendSessionContext(ws, sessionId, view);
+  }
+});
+// Notes changed (new blocks, or switched on/off): show them, and re-render the PDF soon.
+onNotesChanged((sessionId, state) => {
+  if (state.enabled) schedulePdf(sessionId);
+  const ws = activeWs;
+  if (ws && ws.readyState === WebSocket.OPEN && SessionStore.get()?.sessionId === sessionId) {
+    sendNotesUpdate(ws, sessionId, state);
   }
 });
 // Name sessions saved before titles were generated.
@@ -219,6 +234,7 @@ wss.on('error', (err) => {
 process.on('SIGINT', () => {
   console.log('\n[server] SIGINT received — shutting down gracefully');
   stopSpeechServices();
+  void closePdfBrowser();
   httpServer.close();
   wss.close(() => {
     console.log('[server] Server closed');
@@ -229,6 +245,7 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   console.log('[server] SIGTERM received — shutting down gracefully');
   stopSpeechServices();
+  void closePdfBrowser();
   httpServer.close();
   wss.close(() => process.exit(0));
 });

@@ -3,9 +3,9 @@
 > Turning the Vani voice agent into **GuruAI**, a multilingual voice study teacher for Indian
 > students, built on Gnani.ai's **Prisma** (speech-to-text) and **Timbre** (text-to-speech) models.
 >
-> Read with `decisions.md` (ADRs G1–G15 explain *why*) and `todo.md` (the live phase tracker).
+> Read with `decisions.md` (ADRs G1–G18 explain *why*) and `todo.md` (the live phase tracker).
 
-**Last updated:** 2026-11-06 · **Status:** Phases 1–2 implemented · Phase 3 designed, not built
+**Last updated:** 2026-11-06 · **Status:** Phases 1–3 implemented
 
 ---
 
@@ -29,7 +29,7 @@
 |---|---|---|
 | **1** | Replace Whisper and Piper with Gnani Prisma and Timbre. Add language selection and the class/board picker. Keep Vosk only for live captions. | **Implemented** |
 | **2** | Teacher: chunked lessons, analogies, interaction, session memory, learner profile, opener. | **Implemented** (§6) |
-| **3** | Live notes agent, notes sidebar, notebooks in SQLite, PDF through headless Chromium. | Designed (§7) |
+| **3** | Live notes beside the lesson, notes on/off by switch or voice, PDF through system Chrome. | **Implemented** (§7) |
 
 ---
 
@@ -520,68 +520,85 @@ Stored in `learner_profile(key PK, value JSON, updated_ts, source_session_id)`.
 
 ---
 
-## 7. Phase 3 — Live notes and PDF (designed)
+## 7. Phase 3 — Live notes beside the lesson, and a PDF (implemented)
 
-### 7.1 Notes agent — `src/notes/notesAgent.ts`
-
-- **When it runs:** after every `llm_stream_complete`, off the hot path. The spoken reply never waits for notes.
-- **Concurrency:** a serial worker per notebook. If jobs queue up while it is busy, they merge into one call.
-- **How it works:** a JSON-mode LLM call (Gemini `responseSchema`, temperature about 0.2). Input is the notebook's current outline (headings plus block summaries), the latest question and answer, and the language, class and board. Output is a `NotesPatch`:
-
-```ts
-interface NotesPatch {
-  should_record: boolean;            // false for greetings, chit-chat, logistics
-  subject?: string;                  // "भौतिकी (Physics)" — sets the notebook title once
-  topic?: string;                    // "न्यूटन के गति के नियम"
-  ops: Array<
-    | { op: 'add_section'; id: string; heading: string }
-    | { op: 'append_blocks'; section_id: string; blocks: NoteBlock[] }
-    | { op: 'update_block'; block_id: string; text: string }
-  >;
-}
-type NoteBlock = { id: string; kind: 'point'|'definition'|'formula'|'example'|'tip'|'question';
-                   text: string; latex?: string };
-```
-
-- **Rules for the agent:**
-  - Write in the student's language.
-  - Be concise and exam-oriented.
-  - Never duplicate a point that is already in the outline.
-  - Put formulas in `latex`.
-  - A topic switch adds a new section.
-  - The first substantive question sets the title to the subject name.
-- **Applying the patch:** `applyNotesPatch(doc, patch)` is a **pure** function with unit tests. It validates ids, ignores unknown operations, and bumps `version`.
-
-### 7.2 Storage — `contextStore.ts`
+### 7.1 Overview
 
 ```
-notebooks(id TEXT PK, session_id TEXT, title TEXT, subject TEXT, language TEXT, grade TEXT,
-          board TEXT, notes_enabled INTEGER, doc_json TEXT, version INTEGER,
-          created_ts INTEGER, updated_ts INTEGER)
+answer stored ─► (background, serial per session, only while notes are on)
+                 notes agent (src/notes/notesAgent.ts): one JSON LLM call
+                   in:  notebook outline (ids + short text), lesson topic and plan,
+                        new turns since notebooks.upto_turn_id, language, class/board
+                   out: NotesPatch {should_record, subject, topic, ops[]}
+                 applyNotesPatch (pure) ─► notebooks table ─► S→C notes_update ─► docked Notes panel
+                                                          └─► PDF re-render, debounced 5 s ─► data/notes/<session>.pdf
 ```
 
-### 7.3 Turning notes on and off
+Notes are a separate background call from the session memory (§6.5). Memory is compact English; notes are content-rich, in the student's language. Both run through `src/util/serialJobs.ts`: one run at a time per session, with triggers that arrive mid-run folded into one more run.
 
-- A notes toggle on `SessionSetup` and in the notes sidebar sends C→S `set_notes {enabled}`.
-- **By voice:** the LLM gets a `set_notes(enabled: boolean)` tool. "Notes banao" or "notes mat banao" works in any language, and so does the student's answer to the opener question. This tool skips the filler phrase because it completes instantly.
+### 7.2 The notebook — `src/notes/notebook.ts`
 
-### 7.4 Client — `NotesSidebar.tsx`
+- **Shape:** `{ subject /* the headline */, topic, sections: [{ id, heading, blocks: [{ id, kind, text, latex? }] }], version }`. Block kinds: `definition`, `point`, `formula` (with LaTeX), `example`, `tip` ("Remember"), `question` ("Practice").
+- **`applyNotesPatch(nb, patch)`** is pure, and it is the only way the notes change:
+  - **ids:** assigned server-side (`s1`, `b1`…); the LLM can only refer to ids it was shown in the outline.
+  - **Ops:** `add_section` (merges into an existing section with the same heading), `append`, `update_block`. Anything else is ignored.
+  - **Duplicates:** skipped, ignoring case, spaces and punctuation, including the danda. A section is only created if one of its blocks is new.
+  - **Caps:** 40 sections, 30 blocks per section, 400 characters per block. The version moves only on a real change.
+- **Prompt input:** `outlineOf(nb)` gives a compact view (ids and the first ~60 characters of each block), so the prompt stays small as notes grow.
 
-- A collapsible right panel listening for S→C `notes_update {notebook_id, version, doc}`.
-- It renders headings and blocks, with formulas through KaTeX (npm `katex`). New blocks get a brief highlight so the student sees notes appear while they listen.
-- Buttons: notes on/off and **Download PDF**.
+### 7.3 The notes agent — `src/notes/notesAgent.ts`
 
-### 7.5 PDF — `src/pdf/renderNotes.ts`
+- **Runs:** after every stored answer (not after the opener), only while notes are on for the session.
+- **Prompt rules:**
+  - Written in the session language; Hinglish keeps Hindi in Devanagari and English in Latin script, and English technical terms go in brackets.
+  - A topper's-notebook style: one idea per block, "Term: meaning" definitions, formulas with LaTeX plus what each symbol means, one example per idea, tips for memory aids and common mistakes.
+  - Only what the teacher taught. Small talk gives `should_record: false`.
+  - Sections follow the Phase 2 lesson plan when there is one. The headline is the school subject.
+- **On failure:** the notes are unchanged and the turns are retried next time. If the student switched notes off while the call was out, its result is dropped.
+- **Storage:** `notebooks(session_id PK, enabled, doc, upto_turn_id, updated_ts)`. Deleting a session deletes its notebook and PDF.
 
-- **Why Chromium (ADR G8):** Indic scripts need complex text shaping for conjuncts and matras. Only a browser engine does this correctly. pdfkit and jsPDF break Devanagari and Tamil.
-- **How it renders:**
-  - An HTML template with a title page (subject, topic, date, class, board) and sections.
-  - Formulas are rendered server-side with `katex.renderToString`.
-  - Fonts are **bundled locally** in `assets/fonts/` (the Noto families), so output is deterministic and works offline.
-- **Engine:** one lazily launched Playwright Chromium, reused across renders, calling `page.pdf({ format: 'A4', printBackground: true })`.
-- **"Simultaneous" generation:** the PDF regenerates 5 s after the last notes update (debounced) and is saved to `data/notes/<uuid>.pdf`. It is always ready when the student clicks download.
-- **Serving:** `GET /notes/<uuid>.pdf` on the existing HTTP server. The id must match a UUID regex, which prevents path traversal.
-- **Graceful disable:** if Playwright or Chromium isn't installed, PDF is turned off, logged once, and the button is hidden. This is the same pattern `contextStore` uses for SQLite.
+### 7.4 On and off: by default, by switch, by voice
+
+- **Default:** notes are **on by default** for new sessions (`meta.notes_default`, a switch in the panel: "Make notes in new sessions").
+- **Opener:** with notes on, the new-session opener says it will keep notes and that the student can say "no notes".
+- **Switch:** the panel switch sends C→S `set_notes`. Switching on catches up on the turns since the last notes.
+- **Voice:** "no notes", "notes mat banao", "make notes again" in any language. The Phase 2 memory updater reports `notes_request: on | off | null` from the new turns and applies it. There is no tool-calling path, no filler speech and no state-machine change. The teacher prompt knows whether notes are on and simply agrees when asked.
+
+### 7.5 PDF — `src/notes/pdf.ts`
+
+- **Engine:** `playwright-core` drives the **system Google Chrome** (`channel: 'chrome'`; `PDF_BROWSER_CHANNEL` or `PDF_BROWSER_PATH` to override). There is no browser download and no bundled fonts: the system Noto fonts cover every supported script, and Chrome shapes them correctly (ADR G18). The browser launches lazily on first use, is reused, and closes after 60 s idle.
+- **HTML:** `renderNotesHtml` is pure:
+  - a header with the brand, the **subject as headline**, the topic, the session title, class/board, language and date
+  - sections with headings, points as lists, and coloured boxes per block kind
+  - formulas rendered with `katex.renderToString`, with KaTeX CSS and fonts loaded from `node_modules` via a `file://` page
+  - all text HTML-escaped
+- **"Simultaneous":** a render runs 5 s after each notes change (debounced), writing `data/notes/<id>.pdf` plus its version. A download serves the file if current, otherwise renders on the spot. Renders are deduplicated per session.
+- **Routes:**
+  - `GET /api/notes/:id` returns notebook JSON.
+  - `GET /api/notes/:id/pdf` returns the PDF, as `attachment` with a UTF-8 filename such as `भौतिकी (Physics).pdf`. The id is validated, and the file path is built only from it.
+- **Graceful disable:** if Chrome can't be launched, `pdf_available: false` with the reason; the Download button shows it, and the in-app notes keep working.
+
+### 7.6 Client — `client/src/components/NotesPanel.tsx`
+
+- **Layout:** a **docked panel beside the lesson**: `.workspace` puts the stage and the panel side by side, and below 900 px the panel becomes a slide-over. The header's **Notes** button hides or shows it; the choice is remembered per device, and a dot appears when new notes arrive while it is hidden.
+- **Content:** the subject headline and topic, then sections and blocks styled by kind. Formulas render with KaTeX (client dependency).
+- **New notes glow for 2.5 s,** so the student sees them appear while listening. The panel follows new notes only while you are at the bottom.
+- **Controls:** the notes switch, **Download PDF** (fetched, so an error shows its reason instead of saving an error page), and the new-session default.
+- **Protocol:**
+  - S→C `notes_update {session_id, enabled, default_enabled, notebook, pdf_available, pdf_reason}`, sent on open, on every change and on toggle
+  - C→S `set_notes {session_id, enabled}`
+
+### 7.7 Verified
+
+- **Tests:** 176 pass. New suites:
+  - `notebook.test.ts`: ids, merges, duplicates, caps, version, robustness
+  - `notes.test.ts`: the default, the agent with a mocked LLM, catch-up after switching on, failure safety, voice off and on through the memory updater, HTML escaping and KaTeX, and **real PDF renders through system Chrome**
+- **Mock end-to-end, in Hindi:**
+  - The opener mentions notes.
+  - Turn 1 gives the headline "भौतिकी (Physics)" with a definition and an example (v1, PDF pre-rendered). Turn 2 appends `F = ma` (v2, re-rendered).
+  - The download is a 48 KB PDF named `भौतिकी (Physics).pdf`, with correctly shaped Devanagari and the KaTeX formula (checked visually).
+  - "notes mat banao" turns notes off, and the next turn makes no notes call.
+- **Not yet verified:** the quality of notes from the real model.
 
 ---
 

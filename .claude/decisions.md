@@ -557,6 +557,37 @@ memory about the lesson itself.
 
 ---
 
+## G17 — Notes: a separate background agent, a pure patcher, and a voice toggle via memory ✅ (2026-11-06)
+
+**Decision.** Notes are written by their own background JSON call after each exchange (serial per session),
+separate from the session-memory call. The LLM proposes a `NotesPatch`; a pure `applyNotesPatch` owns ids,
+deduplication, caps and versioning. Notes are on by default (user decision) and toggled per session by a
+panel switch or by voice. The voice toggle is detected by the existing memory updater (`notes_request`)
+rather than an LLM tool call.
+
+**Why.** Notes are content-rich and in the student's language, while memory is compact English; one merged
+JSON would be large and fragile. A tool call in the streaming path would mean TOOL_EXECUTING, filler speech
+and state-machine changes for something that can wait a few seconds. The memory updater already reads every
+new turn.
+
+**Consequences.** Two background calls per exchange while notes are on. The toggle takes effect after the
+background update (seconds), not mid-sentence.
+
+## G18 — PDF through the system Chrome, with system fonts (refines G8) ✅ (2026-11-06)
+
+**Decision.** `playwright-core` drives the installed Google Chrome (`channel: 'chrome'`, overridable). It uses
+the system Noto fonts and does not bundle a Chromium or font files. The browser launches lazily and closes when
+idle. If none can be launched, PDF is disabled with a clear reason.
+
+**Why.** The machine already has Chrome 154 and every Noto Indic font. This avoids a ~150 MB browser download
+and several MB of fonts, and keeps text shaping correct (verified: Devanagari conjuncts and KaTeX in the
+rendered PDF).
+
+**Consequences.** Another machine needs Chrome (or `PDF_BROWSER_PATH`, or `npx playwright install chromium`)
+and the Noto fonts for PDF. The in-app notes don't depend on either.
+
+---
+
 ## Pending / not yet decided ⏸
 
 - **PD1 — Tool integration.** Framework prepared but not designed here; the existing `tools/`

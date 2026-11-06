@@ -12,6 +12,7 @@ import { getActiveSentenceBuffer, setActiveSentenceBuffer } from './sharedState'
 import { appendTurn, touchSession } from './contextStore';
 import { openSession, persistSessionSettings, saveSessionRow, sendPreferencesAck } from './sessionLifecycle';
 import { updateMemoryBackground } from './memory/memoryUpdater';
+import { setNotesEnabled, updateNotesBackground } from './notes/notesAgent';
 import { maybeTitleSession } from './titler';
 
 /**
@@ -75,6 +76,13 @@ export function handleTextMessage(
       updateSessionPreferences(ctx, prefs);
       persistSessionSettings(ctx);
       sendPreferencesAck(ws, ctx);
+      break;
+    }
+
+    case 'set_notes': {
+      // Works at any time: the notes agent runs in the background. The
+      // resulting notes_update reaches the client through onNotesChanged.
+      setNotesEnabled(ctx.sessionId, msg.enabled === true);
       break;
     }
 
@@ -366,7 +374,10 @@ export function handleInternalEvent(
       runTransition(ws, ctx, 'llm_stream_complete');
       
       // Update the session memory and learner profile in the background.
-      if (!wasOpener) updateMemoryBackground(ctx.sessionId);
+      if (!wasOpener) {
+        updateMemoryBackground(ctx.sessionId);
+        updateNotesBackground(ctx.sessionId); // no-op when notes are off
+      }
       break;
     }
 

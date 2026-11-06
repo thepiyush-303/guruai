@@ -11,6 +11,7 @@ import { defaultVoice, isVoice } from './voices';
 import { buildTeacherPrompt } from './prompts/teacher';
 import { emptyMemory, loadSessionMemory } from './memory/sessionMemory';
 import { loadProfile } from './memory/learnerProfile';
+import { loadNotes } from './notes/notesAgent';
 
 /** Recent turns of the session replayed to the LLM verbatim (older ones live in the summary). */
 const CONTEXT_TURNS = 12;
@@ -56,6 +57,7 @@ function systemContentFor(sessionId: string, prefs: SessionPreferences): string 
     profile: loadProfile(),
     memory: loadSessionMemory(sessionId).memory,
     recentSessions: recentOtherSessions(sessionId).map((s) => s.title),
+    notesEnabled: loadNotes(sessionId).enabled,
   });
 }
 

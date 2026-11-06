@@ -625,9 +625,19 @@ body {
 
 /* ── Session setup (before connecting) ─────────────────────── */
 
-.stage {
+/* Row 2 holds the lesson stage and, beside it, the docked notes panel. */
+.workspace {
   grid-row: 2;
   grid-column: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace.has-notes {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .foot {
@@ -1227,6 +1237,207 @@ body {
 .profile__value button:hover {
   color: var(--paper);
   background: var(--rule);
+}
+
+/* ── Notes panel ───────────────────────────────────────────── */
+
+.notes {
+  width: min(380px, 34vw);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--rule);
+  background: var(--ink-2);
+}
+
+.notes__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.notes__label {
+  font-family: var(--face-label);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+.notes__switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-family: var(--face-label);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.notes__close {
+  width: 28px;
+  height: 28px;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.notes__close:hover {
+  color: var(--paper);
+}
+
+.notes__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+}
+
+.notes__subject {
+  margin: 0;
+  font-family: var(--face-serif);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.25;
+}
+
+.notes__topic {
+  margin: 4px 0 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.notes__empty,
+.notes__paused {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.notes__section {
+  margin: 0 0 18px;
+}
+
+.notes__section h3 {
+  margin: 0 0 8px;
+  padding-left: 8px;
+  border-left: 3px solid var(--signal);
+  font-family: var(--face-label);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.note {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-family: var(--face-serif);
+  font-size: 15px;
+  line-height: 1.5;
+  transition: background 600ms, border-color 600ms, box-shadow 600ms;
+}
+
+.note--point {
+  padding: 2px 10px 2px 20px;
+  position: relative;
+}
+
+.note--point::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 0.75em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.note--definition { border-color: color-mix(in srgb, var(--signal) 35%, transparent); background: color-mix(in srgb, var(--signal) 8%, transparent); }
+.note--formula { border-color: color-mix(in srgb, var(--amber) 35%, transparent); background: color-mix(in srgb, var(--amber) 7%, transparent); }
+.note--example { border-color: rgb(110 200 140 / 35%); background: rgb(110 200 140 / 7%); }
+.note--tip { border-color: rgb(245 160 90 / 35%); background: rgb(245 160 90 / 7%); }
+.note--question { border-color: rgb(170 140 230 / 35%); background: rgb(170 140 230 / 7%); }
+
+.note__tag {
+  display: block;
+  margin-bottom: 2px;
+  font-family: var(--face-label);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.note__text {
+  margin: 0;
+}
+
+.note__formula {
+  overflow-x: auto;
+  color: var(--paper);
+}
+
+.note__formula .katex-display {
+  margin: 2px 0;
+}
+
+/* Just written: glows, then settles. */
+.note.is-fresh {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--signal) 25%, transparent);
+  animation: note-in 420ms ease-out;
+}
+
+@keyframes note-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.notes__foot {
+  display: grid;
+  gap: 10px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--rule);
+}
+
+.notes__default {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  /* Narrow screens: the notes slide over the lesson instead of sharing the row. */
+  .workspace.has-notes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .notes {
+    position: fixed;
+    inset: 0 0 0 auto;
+    width: min(420px, 92vw);
+    z-index: 12;
+    box-shadow: -12px 0 32px rgb(0 0 0 / 45%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note.is-fresh {
+    animation: none;
+  }
 }
 
 /* ── Sidebar tabs ──────────────────────────────────────────── */

@@ -27,6 +27,8 @@ export interface TeacherPromptInput {
   memory: SessionMemory;
   /** Titles of other recent sessions, newest first. */
   recentSessions: string[];
+  /** Whether written notes are being kept for this session (undefined: don't mention). */
+  notesEnabled?: boolean;
 }
 
 const STATUS_WORD: Record<string, string> = {
@@ -111,7 +113,14 @@ function section(title: string, lines: string[]): string {
   return lines.length ? `\n${title}:\n${lines.join('\n')}` : '';
 }
 
-export function buildTeacherPrompt({ prefs, profile, memory, recentSessions }: TeacherPromptInput): string {
+function notesLine(on: boolean | undefined): string {
+  if (on === undefined) return '';
+  return on
+    ? 'NOTES: written study notes of this lesson are being kept for the student in a panel beside you (they can download them as a PDF). You do not need to dictate them — formulas and lists go into the notes, so keep speaking naturally. If the student asks you to stop making notes, simply agree in a few words.'
+    : 'NOTES: the student has switched written notes off for this session. If they ask for notes again, simply agree in a few words.';
+}
+
+export function buildTeacherPrompt({ prefs, profile, memory, recentSessions, notesEnabled }: TeacherPromptInput): string {
   const lang = getLanguage(prefs.language);
   const gender = voicesForModel().find((v) => v.id === prefs.voice)?.gender;
   const selfForms = gender
@@ -130,6 +139,7 @@ export function buildTeacherPrompt({ prefs, profile, memory, recentSessions }: T
     METHOD,
     '',
     SPOKEN,
+    notesLine(notesEnabled),
     section('ABOUT THE STUDENT (remembered from earlier conversations — use naturally, never recite)', renderProfile(profile)),
     section('THIS SESSION SO FAR', lessonBlock(memory)),
     section("STUDENT'S UNDERSTANDING", understandingBlock(memory)),
@@ -148,7 +158,7 @@ export function buildTeacherPrompt({ prefs, profile, memory, recentSessions }: T
  * The instruction for GuruAI's first words when a session opens (sent as the
  * "user" turn of the opener; it is never stored or shown).
  */
-export function openerInstruction(kind: OpenerKind, profile: LearnerProfile, memory: SessionMemory): string {
+export function openerInstruction(kind: OpenerKind, profile: LearnerProfile, memory: SessionMemory, notesOn = false): string {
   const name = profile.name ? ` The student's name is ${profile.name}; greet them by name.` : '';
   if (kind === 'resumed' && (memory.gist || memory.lesson)) {
     const next = memory.lesson && memory.lesson.next < memory.lesson.chunks.length ? memory.lesson.chunks[memory.lesson.next].title : null;
@@ -161,7 +171,8 @@ export function openerInstruction(kind: OpenerKind, profile: LearnerProfile, mem
   }
   return (
     `[A new study session has just started.] Greet the student warmly in one short sentence.${name} ` +
+    (notesOn ? "Mention in a few words that you will keep written notes for them as you go, and that they can say 'no notes' if they don't want them. " : '') +
     'Then ask what they would like to learn or understand today. ' +
-    'Keep it under 35 words and end with that question.'
+    `Keep it under ${notesOn ? 50 : 35} words and end with that question.`
   );
 }

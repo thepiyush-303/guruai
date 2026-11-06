@@ -60,7 +60,14 @@ TTS). Design: `guruai-design.md`. Decisions: G1–G8 in `decisions.md`.
 - [x] Lesson progress card in the sidebar (`session_context` message)
 - [x] 155 tests; mock e2e of opener → plan → turn 2 prompt → resume recap
 - [!] Live test with the real model (quality of chunking/analogies; consider `openai/gpt-oss-120b`). **User.**
-### Phase G3 — Live notes + PDF  `[ ] designed, not started` (design doc §7)
+### Phase G3 — Live notes + PDF  `[~] code complete, pending live test`  (design doc §7)
+- [x] Notebook model + pure patcher (ids, dedupe, caps, versions)
+- [x] Notes agent (background JSON call, student's language, follows the lesson plan); `notebooks` table
+- [x] On by default; panel switch; voice "no notes / make notes" via the memory updater; opener mentions notes
+- [x] PDF via system Chrome (playwright-core), KaTeX formulas, debounced pre-render, download route
+- [x] Docked Notes panel beside the lesson (slide-over on narrow screens), new-note glow, Download PDF
+- [x] 176 tests incl. real Chrome renders; mock e2e in Hindi (notes fill, PDF downloads, voice off)
+- [!] Live test: notes quality from the real model; PDF of a Tamil/Telugu session. **User.**
 
 ---
 

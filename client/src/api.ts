@@ -7,6 +7,7 @@ import type { LanguageId, LearnerProfile, SessionGroup, SessionSummary, VoiceOpt
 
 export interface ProfileSnapshot {
   memory_enabled: boolean;
+  notes_default: boolean;
   profile: LearnerProfile;
 }
 
@@ -58,6 +59,32 @@ export const forgetFact = (key: string, item?: string) =>
 export const forgetEverything = () => request<ProfileSnapshot>('DELETE', '/api/profile');
 
 export const setMemoryEnabled = (on: boolean) => request<ProfileSnapshot>('PATCH', '/api/settings', { memory_enabled: on });
+
+export const setNotesDefault = (on: boolean) => request<ProfileSnapshot>('PATCH', '/api/settings', { notes_default: on });
+
+/**
+ * Download a session's notes as a PDF. Errors (no notes yet, no browser on
+ * the server) carry the server's message rather than saving an error page.
+ */
+export async function downloadNotesPdf(sessionId: string): Promise<void> {
+  const res = await fetch(`/api/notes/${encodeURIComponent(sessionId)}/pdf`);
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+  const plain = /filename="([^"]+)"/i.exec(disposition)?.[1];
+  const name = star ? decodeURIComponent(star) : plain ?? 'GuruAI notes.pdf';
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
 
 export async function fetchVoices(): Promise<{ model: string; default_voice: string; voices: VoiceOption[] }> {
   return request('GET', '/api/voices');
