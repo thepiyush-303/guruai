@@ -22,8 +22,8 @@
 }
 
 .field__label {
-  font-weight: 600;
-  font-size: 14px;
+  font-weight: 700;
+  font-size: 15px;
 }
 
 .field__optional {
@@ -40,13 +40,14 @@
 
 .select {
   width: 100%;
-  height: 42px;
+  height: 44px;
   padding: 0 36px 0 12px;
-  border: 1px solid var(--border-strong);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius-sm);
   background-color: var(--surface);
-  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
-    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  /* the chevron (two hard-stop triangles, not a decorative gradient) */
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%),
+    linear-gradient(135deg, var(--ink) 50%, transparent 50%);
   background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
   background-size: 5px 5px;
   background-repeat: no-repeat;
@@ -56,12 +57,11 @@
 
 .select:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--focus);
+  box-shadow: var(--shadow-sm);
 }
 
 .select--small {
-  height: 34px;
+  height: 36px;
   width: auto;
   max-width: 180px;
   font-size: 13px;
@@ -87,9 +87,9 @@
 .voice-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr));
-  gap: 8px;
+  gap: 12px;
   width: 100%;
-  padding: 2px;
+  padding: 0 6px 6px 0; /* room for the offset shadows */
 }
 
 .voice-row {
@@ -98,33 +98,34 @@
   gap: 10px;
   min-width: 0;
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: var(--border-w) solid var(--ink);
   border-radius: var(--radius-sm);
   background: var(--surface);
   text-align: left;
-  transition: border-color 0.15s, background 0.15s;
+  transition: transform var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast);
 }
 
 .voice-row:hover {
-  border-color: var(--border-strong);
   background: var(--surface-2);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--shadow-ink);
 }
 
 .voice-row.is-selected {
-  border-color: var(--accent);
   background: var(--accent-soft);
-  box-shadow: 0 0 0 1px var(--accent);
+  box-shadow: var(--shadow-sm);
 }
 
 .voice-row__play {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   flex: none;
-  border-radius: 50%;
-  background: var(--surface-3);
-  color: var(--text-2);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
 }
 
 .voice-row.is-playing .voice-row__play,
@@ -141,7 +142,7 @@
 }
 
 .voice-row__name {
-  font-weight: 600;
+  font-weight: 700;
   font-size: 14px;
 }
 
@@ -157,34 +158,47 @@
   width: 16px;
   height: 16px;
   flex: none;
-  border: 1.5px solid var(--border-strong);
-  border-radius: 50%;
+  border: var(--border-w) solid var(--ink);
+  border-radius: 2px;
+  background: var(--surface);
 }
 
 .voice-row.is-selected .voice-row__check {
-  border: 5px solid var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--surface);
 }
 
 /* ── Settings ──────────────────────────────────────────────── */
 
 .settings-section {
-  margin-bottom: 28px;
+  margin-bottom: 32px;
 }
 
 .settings-section h2 {
-  margin-bottom: 10px;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.settings-section h2::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+  outline: 1.5px solid var(--ink);
 }
 
 .settings-card {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 18px;
+  padding: 24px;
+  margin-right: 8px; /* room for the offset shadow */
 }
 
 .toggle-row {
@@ -202,7 +216,7 @@
 }
 
 .toggle-row__label {
-  font-weight: 500;
+  font-weight: 700;
 }
 
 .toggle-row__hint {
@@ -270,9 +284,9 @@
   align-items: center;
   gap: 4px;
   padding: 2px 4px 2px 10px;
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  border: 1.5px solid var(--ink);
   font-size: 13px;
 }
 
@@ -280,10 +294,10 @@
 .profile__value button {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border: 0;
-  border-radius: 50%;
+  border-radius: 2px;
   background: transparent;
   color: var(--muted);
 }
