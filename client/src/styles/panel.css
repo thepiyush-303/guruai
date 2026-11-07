@@ -9,7 +9,7 @@
   min-width: 0;
   min-height: 0;
   height: 100%;
-  border-left: 1px solid var(--border);
+  border-left: var(--border-w) solid var(--ink);
   background: var(--surface);
 }
 
@@ -18,7 +18,7 @@
   align-items: center;
   gap: 8px;
   padding: 8px 8px 0 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--border-w) solid var(--ink);
 }
 
 .tabs {
@@ -34,12 +34,14 @@
   align-items: center;
   gap: 6px;
   height: 40px;
-  padding: 0 10px;
-  border: 0;
-  border-bottom: 2px solid transparent;
+  margin-bottom: -2px; /* sit on the panel's rule */
+  padding: 0 12px;
+  border: var(--border-w) solid transparent;
+  border-bottom: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   background: transparent;
   color: var(--muted);
-  font-weight: 500;
+  font-weight: 700;
   font-size: 14px;
 }
 
@@ -49,14 +51,17 @@
 
 .tab.is-active {
   color: var(--text);
-  border-bottom-color: var(--accent);
+  border-color: var(--ink);
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px 0 var(--accent-soft);
 }
 
 .tab__badge {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 0;
   background: var(--accent);
+  outline: 1.5px solid var(--ink);
 }
 
 .panel__body {
@@ -121,12 +126,14 @@
 
 .notes__head {
   padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--border-w) solid var(--ink);
+  background: var(--accent-soft);
 }
 
 .notes__head .switch {
   font-size: 13px;
-  color: var(--text-2);
+  font-weight: 700;
+  color: var(--text);
 }
 
 .notes__scroll {
@@ -137,15 +144,18 @@
 }
 
 .notes__subject {
-  font-size: 22px;
+  font-family: var(--face-display);
+  font-size: 24px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  padding-bottom: 8px;
+  border-bottom: 3px solid var(--ink);
 }
 
 .notes__topic {
-  margin-top: 4px;
+  margin-top: 8px;
   color: var(--muted);
   font-size: 14px;
+  font-style: italic;
 }
 
 .notes__empty {
@@ -158,28 +168,43 @@
   margin-top: 20px;
 }
 
+.notes__section {
+  margin-top: 24px;
+}
+
 .notes__section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-  font-size: 15px;
-  font-weight: 650;
+  font-size: 16px;
+}
+
+.notes__section h3::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--accent);
+  outline: 1.5px solid var(--ink);
 }
 
 .note {
   position: relative;
-  margin: 8px 0;
-  padding: 8px 10px 8px 12px;
-  border-left: 3px solid var(--border-strong);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin: 8px 4px 12px 0;
+  padding: 10px 12px 10px 14px;
+  border: 1.5px solid var(--ink);
+  border-left-width: 5px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   font-size: 14px;
   line-height: 1.55;
-  transition: background 0.6s, box-shadow 0.6s;
+  transition: background var(--motion-slow), box-shadow var(--motion-slow);
 }
 
 .note--point {
-  border-left-color: var(--border-strong);
+  border-color: transparent;
+  border-left-color: var(--rule);
   background: transparent;
 }
 
@@ -205,12 +230,12 @@
 
 .note.is-fresh {
   background: var(--accent-soft);
-  box-shadow: 0 0 0 1px var(--accent);
+  box-shadow: var(--shadow-sm);
 }
 
 .note__tag {
   display: block;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -256,6 +281,7 @@
   margin-top: 16px;
   color: var(--warn);
   font-size: 13px;
+  font-weight: 700;
 }
 
 .notes__foot {
@@ -263,24 +289,25 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
-  padding: 12px 16px 16px;
-  border-top: 1px solid var(--border);
+  padding: 16px;
+  border-top: var(--border-w) solid var(--ink);
 }
 
 /* ── Lesson plan ───────────────────────────────────────────── */
 
 .lesson__label {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
 .lesson__topic {
   margin-top: 4px;
-  font-size: 18px;
-  font-weight: 650;
+  font-family: var(--face-display);
+  font-size: 20px;
+  font-weight: 700;
 }
 
 .lesson__count {
@@ -299,35 +326,41 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  margin: 0 4px 8px 0;
+  padding: 10px 12px;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   font-size: 14px;
 }
 
 .lesson__dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 2px solid var(--border-strong);
+  width: 12px;
+  height: 12px;
+  border-radius: 0;
+  border: var(--border-w) solid var(--ink);
 }
 
 .lesson__chunk.is-explained .lesson__dot {
-  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .lesson__chunk.is-understood .lesson__dot {
-  border-color: var(--success);
-  background: var(--success);
+  background: var(--accent);
 }
 
 .lesson__chunk.is-struggling .lesson__dot {
-  border-color: var(--warn);
   background: var(--warn);
 }
 
+.lesson__chunk.is-next {
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-sm);
+}
+
 .lesson__chunk.is-next .lesson__title {
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .lesson__status {
@@ -336,20 +369,23 @@
 }
 
 .lesson__chunk.is-next .lesson__status {
-  color: var(--accent-text);
-  font-weight: 600;
+  color: var(--text);
+  font-weight: 700;
 }
 
 .gist {
-  margin-top: 22px;
+  margin-top: 24px;
+  padding: 16px;
+  border: var(--border-w) dashed var(--ink);
+  border-radius: var(--radius-sm);
 }
 
 .gist h3 {
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 

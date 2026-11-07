@@ -45,31 +45,34 @@ export function HomePage() {
   return (
     <div className="page page--home">
       <section className="hero">
-        <p className="eyebrow">Your patient study teacher</p>
-        <h1 className="hero__title">Understand anything, in your own language.</h1>
-        <p className="hero__lede">
-          GuruAI explains one idea at a time with examples from your daily life, checks that it made sense, and writes your
-          notes while you listen. Speak or type — in {LANGUAGE_OPTIONS.length} Indian languages.
-        </p>
-        <div className="hero__actions">
-          <Link href="/new" className="btn btn--primary btn--large">
-            <Icon name="plus" />
-            Start a new session
-          </Link>
-          {last && (
-            <Link href={`/s/${last.id}`} className="btn btn--large" title={last.title ?? undefined}>
-              Continue “{truncate(last.title || 'last session', 34)}”
-              <Icon name="arrowRight" />
+        <div className="hero__copy">
+          <p className="eyebrow">Your patient study teacher</p>
+          <h1 className="hero__title">Understand anything, in your own language.</h1>
+          <p className="hero__lede">
+            GuruAI explains one idea at a time with examples from your daily life, checks that it made sense, and writes your
+            notes while you listen. Speak or type — in {LANGUAGE_OPTIONS.length} Indian languages.
+          </p>
+          <div className="hero__actions">
+            <Link href="/new" className="btn btn--primary btn--large">
+              <Icon name="plus" />
+              Start a new session
             </Link>
-          )}
+            {last && (
+              <Link href={`/s/${last.id}`} className="btn btn--large" title={last.title ?? undefined}>
+                Continue “{truncate(last.title || 'last session', 34)}”
+                <Icon name="arrowRight" />
+              </Link>
+            )}
+          </div>
+          <ul className="hero__langs" aria-label="Languages">
+            {LANGUAGE_OPTIONS.map((l) => (
+              <li key={l.id} lang={l.id === 'hinglish' ? 'hi' : l.id}>
+                {l.nativeLabel}
+              </li>
+            ))}
+          </ul>
         </div>
-        <ul className="hero__langs" aria-label="Languages">
-          {LANGUAGE_OPTIONS.map((l) => (
-            <li key={l.id} lang={l.id === 'hinglish' ? 'hi' : l.id}>
-              {l.nativeLabel}
-            </li>
-          ))}
-        </ul>
+        <LessonCover />
       </section>
 
       {recent.length > 0 && (
@@ -135,6 +138,39 @@ export function HomePage() {
           <Icon name="arrowRight" />
         </Link>
       </section>
+    </div>
+  );
+}
+
+/** A picture of one lesson, workbook-cover style: how GuruAI teaches a chunk. */
+function LessonCover() {
+  return (
+    <div className="cover" aria-hidden="true">
+      <p className="cover__label">Lesson · Class 9 · Physics</p>
+      <p className="cover__title">Newton&rsquo;s First Law</p>
+      <p className="cover__subtitle">Why you lurch forward when the bus brakes</p>
+      <ol className="cover__steps">
+        <li>
+          <span>Intuition first</span>
+          <em>Things keep doing what they were doing</em>
+        </li>
+        <li>
+          <span>An everyday analogy</span>
+          <em>The bus stops — your body doesn&rsquo;t</em>
+        </li>
+        <li>
+          <span>The real term</span>
+          <em>Inertia</em>
+        </li>
+        <li>
+          <span>Your turn</span>
+          <em>&ldquo;Why do we wear seat belts?&rdquo;</em>
+        </li>
+      </ol>
+      <p className="cover__foot">
+        <span>GuruAI</span>
+        <span>Notes ready · PDF</span>
+      </p>
     </div>
   );
 }

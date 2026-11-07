@@ -1,25 +1,28 @@
 /* ============================================================
-   home.css — the landing page and the generic page frame.
+   home.css — the landing page and the generic page frame, in the School
+   style: an editorial hero split with a lesson "cover", boxed cards with
+   offset shadows, square bullets, numbered chapter rows.
    ============================================================ */
 
 .page {
   width: 100%;
-  max-width: 1080px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 40px var(--gutter) 64px;
+  padding: 48px var(--gutter) 64px;
 }
 
 .page--narrow {
-  max-width: 720px;
+  max-width: 760px;
 }
 
 .page__head {
-  margin-bottom: 28px;
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: var(--border-w) solid var(--ink);
 }
 
 .page__head h1 {
-  font-size: 28px;
-  font-weight: 700;
+  font-size: 32px;
 }
 
 .page__lede {
@@ -28,44 +31,63 @@
   max-width: 60ch;
 }
 
-/* ── Hero ──────────────────────────────────────────────────── */
+/* ── Hero: copy | cover ────────────────────────────────────── */
 
 .hero {
-  padding: 32px 0 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 48px;
+  padding: 16px 0 24px;
+}
+
+.hero__copy {
+  min-width: 0;
 }
 
 .eyebrow {
-  display: inline-block;
-  margin-bottom: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
   padding: 4px 10px;
-  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-sm);
   background: var(--accent-soft);
   color: var(--accent-text);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.eyebrow::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+  outline: 1.5px solid var(--ink);
 }
 
 .hero__title {
-  max-width: 18ch;
-  font-size: clamp(32px, 5vw, 52px);
-  font-weight: 750;
-  line-height: 1.08;
-  letter-spacing: -0.03em;
+  max-width: 16ch;
+  font-size: clamp(32px, 4.6vw, 52px);
+  line-height: 1.12;
 }
 
 .hero__lede {
-  max-width: 62ch;
-  margin-top: 18px;
+  max-width: 58ch;
+  margin-top: 24px;
   color: var(--text-2);
   font-size: 17px;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 .hero__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 28px;
+  gap: 16px;
+  margin-top: 32px;
 }
 
 .hero__actions .btn {
@@ -78,30 +100,137 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 28px 0 0;
+  margin: 32px 0 0;
   padding: 0;
   list-style: none;
 }
 
 .hero__langs li {
-  padding: 4px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
+  padding: 4px 10px;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text-2);
   font-size: 14px;
 }
 
+/* The lesson "cover": a workbook cover with an offset shadow. */
+.cover {
+  position: relative;
+  padding: 24px;
+  border: 3px solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  box-shadow: 8px 8px 0 var(--shadow-ink);
+}
+
+.cover__label {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1.5px solid #022c22;
+  background: #ecfdf5;
+  color: #022c22;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.cover__title {
+  margin-top: 16px;
+  font-family: var(--face-display);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: #022c22;
+}
+
+.cover__subtitle {
+  margin-top: 8px;
+  font-size: 14px;
+  color: #064e3b;
+}
+
+.cover__steps {
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.cover__steps li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 12px;
+  padding: 10px 12px;
+  margin-top: 8px;
+  border: var(--border-w) solid #022c22;
+  border-radius: var(--radius-sm);
+  background: #ecfdf5;
+  color: #022c22;
+  counter-increment: step;
+}
+
+.cover__steps li::before {
+  content: counter(step);
+  grid-row: span 2;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1.5px solid #022c22;
+  background: #10b981;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cover__steps span {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cover__steps em {
+  font-size: 13px;
+  font-style: italic;
+  color: #064e3b;
+}
+
+.cover__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 12px;
+  border-top: var(--border-w) solid #022c22;
+  color: #022c22;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 /* ── Sections ──────────────────────────────────────────────── */
 
 .home-section {
-  margin-top: 48px;
+  margin-top: 64px;
 }
 
 .home-section h2 {
-  margin-bottom: 16px;
-  font-size: 20px;
-  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  font-size: 24px;
+}
+
+.home-section h2::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  flex: none;
+  background: var(--accent);
+  outline: var(--border-w) solid var(--ink);
 }
 
 .home-section__head {
@@ -114,11 +243,15 @@
 .card-grid,
 .feature-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 24px;
   margin: 0;
-  padding: 0;
+  padding: 0 8px 8px 0; /* room for the offset shadows */
   list-style: none;
+}
+
+.feature-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
 }
 
 .session-card {
@@ -126,26 +259,27 @@
   flex-direction: column;
   gap: 8px;
   height: 100%;
-  padding: 16px;
+  padding: 24px;
   color: var(--text);
   text-decoration: none;
-  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+  transition: transform var(--motion-fast), box-shadow var(--motion-fast);
 }
 
 .session-card:hover {
-  border-color: var(--accent);
-  box-shadow: var(--shadow-md);
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 var(--shadow-ink);
 }
 
 .session-card__title {
-  font-weight: 600;
-  font-size: 15px;
+  font-family: var(--face-display);
+  font-weight: 700;
+  font-size: 17px;
 }
 
 .session-card__excerpt {
   color: var(--muted);
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -157,70 +291,78 @@
   align-items: center;
   gap: 8px;
   margin-top: auto;
+  padding-top: 12px;
+  border-top: 1.5px solid var(--rule);
   color: var(--muted);
   font-size: 12px;
 }
 
 .feature {
-  padding: 20px;
+  padding: 24px;
 }
 
 .feature__icon {
   display: inline-grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  margin-bottom: 14px;
-  border-radius: 10px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  width: 44px;
+  height: 44px;
+  margin-bottom: 16px;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  box-shadow: 3px 3px 0 var(--shadow-ink);
 }
 
 .feature h3 {
-  font-size: 16px;
-  font-weight: 650;
+  font-size: 18px;
 }
 
 .feature p {
-  margin-top: 6px;
-  color: var(--muted);
+  margin-top: 8px;
+  color: var(--text-2);
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
+/* How it works: chapter rows. */
 .steps {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
-  gap: 14px;
-  margin: 0 0 24px;
-  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 0 0 32px;
+  padding: 0 8px 8px 0;
   list-style: none;
 }
 
 .step {
   display: flex;
-  gap: 14px;
-  padding: 18px;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius);
+  align-items: center;
+  gap: 16px;
+  padding: 16px 24px;
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
 }
 
 .step__num {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 40px;
+  height: 40px;
   flex: none;
-  border-radius: 50%;
-  background: var(--text);
-  color: var(--bg);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-family: var(--face-display);
   font-weight: 700;
-  font-size: 14px;
+  font-size: 18px;
 }
 
 .step h3 {
-  font-size: 15px;
-  font-weight: 650;
+  font-size: 16px;
 }
 
 .step p {
@@ -229,16 +371,41 @@
   font-size: 14px;
 }
 
+@media (max-width: 900px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+
+  .cover {
+    max-width: 440px;
+  }
+}
+
 @media (max-width: 640px) {
   .page {
-    padding-top: 24px;
+    padding-top: 32px;
+    padding-bottom: 48px;
   }
 
   .hero {
-    padding-top: 8px;
+    padding-top: 0;
   }
 
   .hero__actions .btn {
     width: 100%;
+  }
+
+  .cover {
+    margin-right: 8px; /* keep the offset shadow on screen */
+  }
+
+  .home-section {
+    margin-top: 48px;
+  }
+
+  .step {
+    align-items: flex-start;
+    padding: 16px;
   }
 }
