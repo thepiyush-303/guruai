@@ -1,6 +1,7 @@
 // ============================================================
-// server.ts — WebSocket server + HTTP static file server
-// WS on PORT (default 8765), HTTP on HTTP_PORT (default 3000)
+// server.ts — one HTTP server for everything: the built client, the /api
+// routes, and the WebSocket (upgrade on /ws).
+// Port: HTTP_PORT, else PORT (what hosting platforms set), else 3000.
 // ============================================================
 
 import 'dotenv/config';
@@ -20,16 +21,17 @@ import { onMemoryUpdated } from './memory/memoryUpdater';
 import { handleApi } from './httpApi';
 import { onSessionTitled, titleBacklog } from './titler';
 
-const PORT = parseInt(process.env.PORT ?? '8765', 10);
-const HTTP_PORT = parseInt(process.env.HTTP_PORT ?? '3000', 10);
+// One port, because hosting platforms (Railway, Render, Fly) expose exactly
+// one and hand it over as PORT. Locally HTTP_PORT (3000) is used if set.
+const HTTP_PORT = parseInt(process.env.HTTP_PORT ?? process.env.PORT ?? '3000', 10);
+/** The WebSocket shares the HTTP port, on this path. */
+const WS_PATH = '/ws';
 // The frontend is a Vite app in client/. Production serves its build output;
 // `npm run build` inside client/ produces it. During frontend development the
 // Vite dev server serves the same files on its own port and talks to this
 // process over the WebSocket only.
 const PUBLIC_DIR = path.join(__dirname, '..', 'client', 'dist');
 
-
-const wss = new WebSocketServer({ port: PORT });
 
 // ── HTTP static file server (serves client/dist/) ─────────────
 const MIME_TYPES: Record<string, string> = {
@@ -81,14 +83,16 @@ const httpServer = http.createServer((req, res) => {
   });
 });
 
+// The WebSocket rides on the same server: upgrades to /ws (others are refused).
+const wss = new WebSocketServer({ server: httpServer, path: WS_PATH });
+
 httpServer.listen(HTTP_PORT, () => {
-  console.log(`[server] HTTP static server listening on http://localhost:${HTTP_PORT}`);
+  console.log(`[server] listening on http://localhost:${HTTP_PORT} (app + /api) and ws://localhost:${HTTP_PORT}${WS_PATH}`);
   if (!fs.existsSync(PUBLIC_DIR)) {
     console.warn(`[server] ${PUBLIC_DIR} not found — the frontend has not been built. Run: cd client && npm run build`);
   }
 });
 
-console.log(`[server] WebSocket server listening on port ${PORT}`);
 
 // Open the durable transcript store (disables itself if better-sqlite3 is absent).
 initContextStore();

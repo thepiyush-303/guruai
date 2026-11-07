@@ -8,12 +8,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SAMPLE_RATE, type ClientMessage, type Connection, type Preferences, type ServerMessage } from '../protocol.ts';
 
-// The WS port is the server's PORT (default 8765); set VITE_WS_PORT when
-// building the client if the server uses another one. The host is taken from
-// the page so this works from the Vite dev server, from the Node static
-// server, and over the network rather than only on localhost.
-const WS_PORT = (import.meta.env.VITE_WS_PORT as string | undefined) || '8765';
-const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:${WS_PORT}`;
+// The WebSocket lives on the server's own port at /ws. By default that is
+// this page's origin (the Node server serves the app; the Vite dev server
+// proxies /ws). When the app is hosted apart from the server (e.g. on Vercel),
+// build it with VITE_WS_URL=wss://<server-host> — "/ws" is added if missing,
+// and http(s):// is accepted too.
+function wsUrl(): string {
+  const configured = (import.meta.env.VITE_WS_URL as string | undefined)?.trim();
+  if (configured) {
+    try {
+      const url = new URL(configured);
+      if (url.protocol === 'https:') url.protocol = 'wss:';
+      if (url.protocol === 'http:') url.protocol = 'ws:';
+      if (url.pathname === '/' || url.pathname === '') url.pathname = '/ws';
+      return url.toString();
+    } catch {
+      console.error(`VITE_WS_URL is not a valid URL: ${configured}`);
+    }
+  }
+  return `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
+}
+const WS_URL = wsUrl();
 
 interface Options {
   onMessage: (msg: ServerMessage) => void;

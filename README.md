@@ -21,6 +21,7 @@ speech-to-text and **Timbre** for text-to-speech. Answers come from **Groq** or 
 - [Project structure](#project-structure)
 - [HTTP API and WebSocket protocol](#http-api-and-websocket-protocol)
 - [Data and privacy](#data-and-privacy)
+- [Deploying (Vercel + Railway)](#deploying-vercel--railway)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Further documentation](#further-documentation)
@@ -70,7 +71,7 @@ speech-to-text and **Timbre** for text-to-speech. Answers come from **Groq** or 
 ┌──────────────── Browser (React + Vite, client/) ────────────────┐
 │ Silero VAD → 16 kHz PCM frames      captions · orb · notes panel │
 └───────────┬──────────────────────────────────────▲──────────────┘
-   WebSocket│ :8765 (audio + JSON events)          │ text events + TTS audio
+   WebSocket│ :3000/ws (audio + JSON events)       │ text events + TTS audio
             ▼                                      │
 ┌──────────────────────── Node server (src/) ──────────────────────┐
 │ server.ts → messageHandler.ts → stateMachine.ts (pure) →          │
@@ -147,10 +148,10 @@ Allow the microphone when the browser asks.
 ### Development mode
 
 Run the server and the Vite dev server side by side. The client gets hot reload, and Vite proxies
-`/api` to the server:
+`/api` and the WebSocket (`/ws`) to the server:
 
 ```bash
-npm run dev                  # terminal 1 — WebSocket :8765, HTTP :3000
+npm run dev                  # terminal 1 — app, /api and WebSocket /ws, all on :3000
 cd client && npm run dev     # terminal 2 — open the URL Vite prints (usually :5173)
 ```
 
@@ -158,7 +159,7 @@ cd client && npm run dev     # terminal 2 — open the URL Vite prints (usually 
 
 ```bash
 cd client && npm run build && cd ..
-npm run build && npm start   # compiled server; serves client/dist on HTTP_PORT
+npm run build && npm start   # compiled server; serves client/dist, /api and /ws on HTTP_PORT
 ```
 
 ### Optional: live captions (Vosk)
@@ -195,8 +196,9 @@ Everything lives in `.env`; `.env.example` documents each value. The ones that m
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PORT` | `8765` | WebSocket port. The client connects to `:8765`; if you change it, build the client with `VITE_WS_PORT=<port> npm run build` |
-| `HTTP_PORT` | `3000` | HTTP: the built client and `/api` |
+| `HTTP_PORT` | `3000` | the one port for everything: the built client, `/api`, and the WebSocket at `/ws` |
+| `PORT` | — | used when `HTTP_PORT` is not set (hosting platforms set it) |
+| `VITE_WS_URL` (client build) | same origin | where the client's WebSocket goes when the app is hosted apart from the server, e.g. `wss://api.example.com` (`/ws` is added) |
 
 **Gnani speech**
 
@@ -291,6 +293,7 @@ Everything lives in `.env`; `.env.example` documents each value. The ones that m
 │   ├── scripts/ttsLongSmoke.ts   speak a long answer through the real Timbre socket, per-sentence report
 │   └── __tests__/                Jest suites
 ├── client/                       React + Vite app
+│   ├── vercel.json               Vercel build settings, /api rewrite, SPA fallback
 │   └── src/
 │       ├── App.tsx               the shell: sidebar + current page
 │       ├── router.ts             /, /new, /s/<id>, /settings (pushState, no dependency)
@@ -304,6 +307,7 @@ Everything lives in `.env`; `.env.example` documents each value. The ones that m
 │       ├── components/           Sidebar, Thread, Composer, SidePanel, NotesPanel, VoicePicker,
 │       │                         LessonProgress, ProfilePanel, Orb, Icon, Link
 │       └── styles/               tokens (light/dark), base, shell, home, forms, session, panel
+├── Dockerfile                    server image for hosting (Node 22 + Chromium + Noto fonts)
 ├── vosk_server.py                Vosk live-caption recognizer (stdin PCM → JSON)
 ├── vocab.txt                     recognition hints
 ├── data/                         runtime data (git-ignored): vani.db, notes/, voice-previews/
@@ -331,7 +335,7 @@ Everything lives in `.env`; `.env.example` documents each value. The ones that m
 
 Mutations require a JSON body or a non-simple method, so other websites cannot trigger them.
 
-### WebSocket (`:8765`)
+### WebSocket (`/ws` on the same port)
 
 **Binary frames:**
 - client → server: 16 kHz mono s16le PCM, 512-sample frames
@@ -360,6 +364,40 @@ Full message shapes are in `src/types.ts`, mirrored in `client/src/protocol.ts`.
 
 One session is served at a time. A new connection (another session page, a reload) takes over and the
 previous connection is closed with code `4000`.
+
+---
+
+## Deploying (Vercel + Railway)
+
+The React app (`client/`) is static and goes on **Vercel**. The server cannot: it keeps a WebSocket
+open for the whole lesson, stores everything in a SQLite file, and prints PDFs with Chromium. It goes
+on a host that runs a long-lived process with a disk (**Railway** here; Render or Fly.io work the same
+way). Vosk live captions are not deployed; nothing else depends on them.
+
+```
+Browser ──https──► Vercel (client/)  ── /api/* rewrite ──►  Railway (server: /api + /ws)
+        ──wss─────────────────────────────────────────────►  (VITE_WS_URL)
+```
+
+**1. Server on Railway** (uses the repo's `Dockerfile`: Node 22, Chromium and Noto fonts for PDFs)
+1. *New Project → Deploy from GitHub repo* → this repository (root directory: the repo root).
+2. Add a **volume** mounted at **`/data`** (sessions, memory, notes and PDFs live there).
+3. Variables: `GNANI_API_KEY`, `LLM_PROVIDER=groq`, `GROQ_API_KEY`, `GROQ_MODEL` (and `SUMMARY_MODEL` if
+   you use one). Do not set `PORT` (Railway does) or any `VOSK_MODEL_PATH_*`.
+4. *Settings → Networking → Generate Domain*. Check `https://<domain>/api/voices` returns JSON.
+
+**2. App on Vercel**
+1. *Add New → Project* → this repository. **Root Directory: `client`** (framework Vite; build, install
+   and output settings come from `client/vercel.json`).
+2. In `client/vercel.json`, replace `YOUR-BACKEND-DOMAIN` with the Railway domain, and push.
+3. Environment variable: `VITE_WS_URL=wss://<railway-domain>`. Deploy.
+
+Same-origin `/api` (through the rewrite) means no CORS settings. The microphone needs HTTPS, which
+Vercel provides.
+
+> **Before sharing the link:** there is no login, so anyone with the URL uses your Gnani and LLM keys
+> and sees every saved session and the one shared profile. And one person can talk at a time: a second
+> visitor takes over the session. Fine for a demo; not yet for a class.
 
 ---
 

@@ -1,0 +1,14 @@
+node_modules
+client
+data
+models
+venv
+dist
+coverage
+.env
+.env.*
+!.env.example
+.git
+.claude
+*.md
+*.pcm
