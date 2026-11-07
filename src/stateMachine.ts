@@ -52,6 +52,12 @@ export function transition(
             nextState: ServerState.LLM_STREAMING,
             sideEffects: ['START_LLM_STREAM'],
           };
+        case 'text_input':
+          // A typed question: no audio to transcribe, straight to the answer.
+          return {
+            nextState: ServerState.LLM_STREAMING,
+            sideEffects: ['START_LLM_STREAM'],
+          };
         default:
           return invalidTransition(currentState, event);
       }

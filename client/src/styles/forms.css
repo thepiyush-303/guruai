@@ -1,0 +1,306 @@
+/* ============================================================
+   forms.css — the new-session form, the voice list and Settings.
+   ============================================================ */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.field__label {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.field__optional {
+  margin-left: 6px;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.field__hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.select {
+  width: 100%;
+  height: 42px;
+  padding: 0 36px 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface);
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  appearance: none;
+  font-size: 14px;
+}
+
+.select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
+.select--small {
+  height: 34px;
+  width: auto;
+  max-width: 180px;
+  font-size: 13px;
+}
+
+.form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding-top: 4px;
+}
+
+/* ── Voice list ────────────────────────────────────────────── */
+
+.voice-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.voice-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr));
+  gap: 8px;
+  width: 100%;
+  padding: 2px;
+}
+
+.voice-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.voice-row:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.voice-row.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.voice-row__play {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.voice-row.is-playing .voice-row__play,
+.voice-row.is-selected .voice-row__play {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.voice-row__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.voice-row__name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.voice-row__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.voice-row__check {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+}
+
+.voice-row.is-selected .voice-row__check {
+  border: 5px solid var(--accent);
+}
+
+/* ── Settings ──────────────────────────────────────────────── */
+
+.settings-section {
+  margin-bottom: 28px;
+}
+
+.settings-section h2 {
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  cursor: pointer;
+}
+
+.toggle-row__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toggle-row__label {
+  font-weight: 500;
+}
+
+.toggle-row__hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.toggle-row .switch {
+  margin-top: 2px;
+}
+
+/* About you */
+
+.profile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.profile > .toggle-row {
+  align-self: stretch;
+}
+
+.profile__lede {
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.profile__facts {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  width: 100%;
+}
+
+.profile__fact {
+  display: grid;
+  grid-template-columns: minmax(110px, 160px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+}
+
+.profile__fact dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.profile__fact dd {
+  margin: 0;
+}
+
+.profile__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.profile__chips li,
+.profile__value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.profile__chips button,
+.profile__value button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+}
+
+.profile__chips button:hover,
+.profile__value button:hover {
+  background: var(--surface-3);
+  color: var(--danger);
+}
+
+@media (max-width: 560px) {
+  .field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .profile__fact {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+}

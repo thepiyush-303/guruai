@@ -5,7 +5,7 @@
 
 import { AddressInfo } from 'net';
 import WebSocket, { WebSocketServer } from 'ws';
-import { GnaniTtsClient } from '../gnaniTts';
+import { GnaniTtsClient, splitInTwo } from '../gnaniTts';
 import { TtsFramer, stripWavHeader, WS_CHUNK_BYTES } from '../ttsFraming';
 import { LANGUAGES } from '../languages';
 
@@ -35,6 +35,12 @@ function audioMsg(pcm: Buffer, i: number) {
   return JSON.stringify({ type: 'audio', data: { chunk_index: i, audio: pcm.toString('base64'), is_final: false } });
 }
 
+/** What Timbre really sends at the end of a request: end-of-audio, then a summary. */
+function sendComplete(ws: WebSocket) {
+  ws.send(JSON.stringify({ type: 'complete', data: { chunk_index: 2, audio: '', is_final: true } }));
+  ws.send(JSON.stringify({ type: 'complete', message: 'Streaming completed', request_id: 'r' }));
+}
+
 function startMock(): Promise<MockTts> {
   return new Promise((resolve) => {
     const wss = new WebSocketServer({ port: 0 });
@@ -48,7 +54,7 @@ function startMock(): Promise<MockTts> {
         ws.send(JSON.stringify({ type: 'start', request_id: 'r' }));
         ws.send(audioMsg(Buffer.alloc(3001, 1), 0)); // odd length on purpose
         ws.send(audioMsg(Buffer.alloc(1001, 2), 1));
-        ws.send(JSON.stringify({ type: 'complete', data: { is_final: true, audio: '' } }));
+        sendComplete(ws);
       },
       close: () =>
         new Promise((r) => {
@@ -96,6 +102,7 @@ describe('GnaniTtsClient', () => {
       voice: 'Shivani',
       speed: 1,
       framer: new TtsFramer(20),
+      fallback: null,
     });
     client.configure(LANGUAGES.hi);
   });
@@ -233,6 +240,153 @@ describe('GnaniTtsClient', () => {
     await sleep(200);
     expect(mock.requests.map((r) => r.text)).toEqual(['broken', 'fine']);
     errSpy.mockRestore();
+  });
+
+  it('retries a sentence the socket errors on over REST, in order', async () => {
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const restCalls: string[] = [];
+    const c = new GnaniTtsClient({
+      url: mock.url, apiKey: 'k', model: 'timbre-v3.0', voice: 'Shivani', speed: 1, framer: new TtsFramer(20),
+      fallback: async (req) => {
+        restCalls.push(req.text);
+        await sleep(30);
+        return Buffer.alloc(600, 7); // raw PCM
+      },
+    });
+    c.configure(LANGUAGES.hi);
+    mock.respond = (s, r) => {
+      if (r.text === 'second') s.send(JSON.stringify({ type: 'error', message: 'nope' }));
+      else {
+        s.send(audioMsg(Buffer.alloc(200, r.text === 'first' ? 1 : 3), 0));
+        s.send(JSON.stringify({ type: 'complete', data: { is_final: true, audio: '' } }));
+      }
+    };
+    const stats: Array<{ spoken: number; failed: number } | undefined> = [];
+    c.onActivity((a, st) => { if (!a) stats.push(st); });
+    const { ws, frames } = fakeClientSocket();
+    c.synthesize('first', ws);
+    c.synthesize('second', ws);
+    c.synthesize('third', ws);
+    await sleep(400);
+    expect(restCalls).toEqual(['second']);
+    // Audio arrives in sentence order: first (1s), second via REST (7s), third (3s).
+    const bytes = Buffer.concat(frames.map((f) => f.subarray(4)));
+    expect(bytes.length).toBe(1000);
+    expect(bytes[0]).toBe(1);
+    expect(bytes[200]).toBe(7);
+    expect(bytes[800]).toBe(3);
+    expect(stats).toEqual([{ spoken: 3, failed: 0 }]);
+    c.stop();
+    errSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('finishes a sentence whose socket closed mid-audio without repeating what was played', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const c = new GnaniTtsClient({
+      url: mock.url, apiKey: 'k', model: 'timbre-v3.0', voice: 'Shivani', speed: 1, framer: new TtsFramer(20),
+      reconnectDelayMs: 10,
+      fallback: async () => Buffer.alloc(1000, 9),
+    });
+    c.configure(LANGUAGES.hi);
+    let n = 0;
+    mock.respond = (s) => {
+      if (n++ === 0) {
+        s.send(audioMsg(Buffer.alloc(400, 5), 0));
+        setTimeout(() => s.terminate(), 20);
+      } else {
+        s.send(audioMsg(Buffer.alloc(100, 6), 0));
+        s.send(JSON.stringify({ type: 'complete', data: { is_final: true, audio: '' } }));
+      }
+    };
+    const { ws, frames } = fakeClientSocket();
+    c.synthesize('the long last sentence', ws);
+    c.synthesize('and one more', ws);
+    await sleep(400);
+    const bytes = Buffer.concat(frames.map((f) => f.subarray(4)));
+    // 400 from the socket + the remaining 600 of the REST audio + 100 of the next sentence.
+    expect(bytes.length).toBe(1100);
+    expect(bytes[399]).toBe(5);
+    expect(bytes[400]).toBe(9);
+    expect(bytes[1000]).toBe(6);
+    c.stop();
+    warnSpy.mockRestore();
+  });
+
+  it('splits a long sentence that fails twice, and counts what could not be spoken', async () => {
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const c = new GnaniTtsClient({
+      url: mock.url, apiKey: 'k', model: 'timbre-v3.0', voice: 'Shivani', speed: 1, framer: new TtsFramer(20),
+      fallback: async () => { throw new Error('rest down'); },
+    });
+    c.configure(LANGUAGES.hi);
+    const long = 'This sentence is long enough to split, and the second half is fine';
+    mock.respond = (s, r) => {
+      if (r.text === long || r.text === 'short bad') s.send(JSON.stringify({ type: 'error', message: 'too long' }));
+      else s.send(JSON.stringify({ type: 'complete', data: { is_final: true, audio: '' } }));
+    };
+    const stats: Array<{ spoken: number; failed: number } | undefined> = [];
+    c.onActivity((a, st) => { if (!a) stats.push(st); });
+    const { ws } = fakeClientSocket();
+    c.synthesize(long, ws);
+    c.synthesize('short bad', ws);
+    await sleep(400);
+    expect(mock.requests.map((r) => r.text)).toEqual([
+      long,
+      'This sentence is long enough to split,',
+      'and the second half is fine',
+      'short bad',
+    ]);
+    expect(stats).toEqual([{ spoken: 2, failed: 1 }]);
+    c.stop();
+    errSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it("keeps each sentence's audio with its own sentence across Timbre's double complete", async () => {
+    // Real Timbre: audio…, complete{data}, [next request sent here], complete{message}.
+    // The trailing summary used to "complete" the NEXT sentence before its audio.
+    mock.respond = (s, r) => {
+      const fill = r.text === 'one' ? 1 : r.text === 'two' ? 2 : 3;
+      s.send(audioMsg(Buffer.alloc(300, fill), 0));
+      s.send(JSON.stringify({ type: 'complete', data: { chunk_index: 1, audio: '', is_final: true } }));
+      setTimeout(() => s.send(JSON.stringify({ type: 'complete', message: 'Streaming completed', request_id: 'r' })), 5);
+    };
+    const stats: Array<{ spoken: number; failed: number } | undefined> = [];
+    client.onActivity((a, st) => { if (!a) stats.push(st); });
+    const { ws, frames } = fakeClientSocket();
+    client.synthesize('one', ws);
+    client.synthesize('two', ws);
+    client.synthesize('three', ws);
+    await sleep(300);
+    const bytes = Buffer.concat(frames.map((f) => f.subarray(4)));
+    expect(bytes.length).toBe(900); // nothing dropped
+    expect([bytes[0], bytes[300], bytes[600]]).toEqual([1, 2, 3]);
+    expect(stats).toEqual([{ spoken: 3, failed: 0 }]);
+  });
+
+  it('reports whether speech is active', async () => {
+    const { ws } = fakeClientSocket();
+    expect(client.isActive).toBe(false);
+    client.synthesize('hello there', ws);
+    expect(client.isActive).toBe(true);
+    await sleep(200);
+    expect(client.isActive).toBe(false);
+  });
+});
+
+describe('splitInTwo', () => {
+  it('prefers a clause mark near the middle', () => {
+    expect(splitInTwo('Photosynthesis needs sunlight, water and carbon dioxide; it makes glucose')).toEqual([
+      'Photosynthesis needs sunlight,',
+      'water and carbon dioxide; it makes glucose',
+    ]);
+  });
+  it('falls back to a space, and refuses tiny text', () => {
+    expect(splitInTwo('one two three four five six')).toEqual(['one two three', 'four five six']);
+    expect(splitInTwo('short')).toBeNull();
   });
 });
 

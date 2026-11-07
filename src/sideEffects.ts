@@ -94,7 +94,7 @@ export function initSpeechServices(
 
   // Tell the client when speech output starts and finishes, so it can keep the
   // mic closed for the whole answer (see TtsStateMessage).
-  getTts().onActivity((active) => {
+  getTts().onActivity((active, stats) => {
     const ws = activeWs;
     if (!ws) return;
     sendJson(ws, {
@@ -102,6 +102,7 @@ export function initSpeechServices(
       session_id: SessionStore.get()?.sessionId ?? '',
       active,
       timestamp_ms: Date.now(),
+      ...(stats ? { spoken: stats.spoken, failed: stats.failed } : {}),
     });
   });
 
@@ -232,27 +233,54 @@ function startTts(ws: WebSocket, ctx: SessionContext): void {
   const tts = getTts();
   tts.beginTurn();
   const buf = new SentenceBuffer((sentence) => {
+    // Text-only mode: the reply is still streamed as text, but never synthesised.
+    if (!voiceOutput) return;
     const speakable = sanitizeForTTS(sentence);
     if (speakable) tts.synthesize(speakable, ws);
   });
   sentenceBuffer = buf;
   setActiveSentenceBuffer(buf);   // share with messageHandler llm_token handler
-  console.log(`[${ctx.sessionId}] START_TTS — sentence buffer active`);
+  console.log(`[${ctx.sessionId}] START_TTS — sentence buffer active${voiceOutput ? '' : ' (voice off: text only)'}`);
 }
 
 function stopTts(ws: WebSocket, ctx: SessionContext): void {
   console.log(`[${ctx.sessionId}] STOP_TTS — speech cancelled`);
   resetSentenceBuffer();
   setActiveSentenceBuffer(null);   // clear messageHandler reference
-  getTts().kill();
+  interruptSpeech(ws, ctx, 'barge_in');
+}
 
+/**
+ * Silence the answer being spoken (queued sentences and the one in flight) and
+ * tell the client to drop what it has buffered. The LLM text is unaffected.
+ */
+export function interruptSpeech(
+  ws: WebSocket,
+  ctx: SessionContext,
+  reason: 'barge_in' | 'stopped' | 'new_question' | 'voice_off',
+): void {
+  getTts().kill();
   const msg: ServerMessage = {
     type: 'tts_interrupted',
     session_id: ctx.sessionId,
-    reason: 'barge_in',
+    reason,
     timestamp_ms: Date.now(),
   };
   sendJson(ws, msg);
+}
+
+// ── Voice output (spoken replies on/off) ──────────────────────
+// Per device on the client, so per connection here: it outlives switch_session.
+
+let voiceOutput = true;
+
+export function voiceOutputEnabled(): boolean {
+  return voiceOutput;
+}
+
+export function setVoiceOutput(on: boolean): void {
+  if (voiceOutput !== on) console.log(`[speech] voice output ${on ? 'on' : 'off (text only)'}`);
+  voiceOutput = on;
 }
 
 function sendFillerTts(ws: WebSocket, ctx: SessionContext): void {

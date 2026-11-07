@@ -8,10 +8,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SAMPLE_RATE, type ClientMessage, type Connection, type Preferences, type ServerMessage } from '../protocol.ts';
 
-// The WS port is fixed by the server (PORT, default 8765). The host is taken
-// from the page so this works both from the Vite dev server and from the Node
-// static server, and over the network rather than only on localhost.
-const WS_URL = `ws://${window.location.hostname}:8765`;
+// The WS port is the server's PORT (default 8765); set VITE_WS_PORT when
+// building the client if the server uses another one. The host is taken from
+// the page so this works from the Vite dev server, from the Node static
+// server, and over the network rather than only on localhost.
+const WS_PORT = (import.meta.env.VITE_WS_PORT as string | undefined) || '8765';
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:${WS_PORT}`;
 
 interface Options {
   onMessage: (msg: ServerMessage) => void;
@@ -61,7 +63,10 @@ export function useWsClient(opts: Options) {
    * Open the socket. `preferences` travel in session_init. With `resume`, the
    * server continues the saved session `sessionId` (its language and history).
    */
-  const connect = useCallback((preferences: Preferences, opts: { sessionId?: string; resume?: boolean; groupId?: string | null } = {}) => {
+  const connect = useCallback((
+    preferences: Preferences,
+    opts: { sessionId?: string; resume?: boolean; groupId?: string | null; voiceOutput?: boolean } = {},
+  ) => {
     if (wsRef.current) return;
 
     const sessionId = opts.sessionId ?? crypto.randomUUID();
@@ -96,6 +101,7 @@ export function useWsClient(opts: Options) {
           preferences,
           resume,
           group_id: opts.groupId ?? null,
+          voice_output: opts.voiceOutput !== false,
         } satisfies ClientMessage),
       );
       optsRef.current.log('→ session_init', 'out');

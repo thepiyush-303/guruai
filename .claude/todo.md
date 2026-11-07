@@ -4,7 +4,7 @@
 > Plan lives in `plan.md`; how in `architecture.md`; why in `decisions.md`.
 > Update this file as phases start/land (CLAUDE.md: goal-driven execution).
 
-**Last updated:** 2026-09-05 (Phase 2 frontend code-complete)
+**Last updated:** 2026-11-07 (Phase G4: app shell, typed input, complete speech)
 
 ---
 
@@ -68,6 +68,14 @@ TTS). Design: `guruai-design.md`. Decisions: G1–G8 in `decisions.md`.
 - [x] Docked Notes panel beside the lesson (slide-over on narrow screens), new-note glow, Download PDF
 - [x] 176 tests incl. real Chrome renders; mock e2e in Hindi (notes fill, PDF downloads, voice off)
 - [!] Live test: notes quality from the real model; PDF of a Tamil/Telugu session. **User.**
+### Phase G4 — App shell, typed input, voice off, complete speech  `[~] code complete, pending live test`  (design doc §10)
+- [x] Root cause of missing last lines: Timbre's double `complete` (measured 50.8 s → 94.2 s for the same answer)
+- [x] No silent TTS skips: REST second chance, split, spoken/failed accounting; `npm run smoke:tts-long`
+- [x] `text_input`, `set_voice_output`, `stop_speaking`; newest connection wins; SPA fallback
+- [x] Client rebuilt: routes, sidebar, Home, New session, Session (thread + composer + one side panel), Settings
+- [x] Light / dark / system themes; mobile drawer and slide-over
+- [x] 186 tests; mock e2e 32/32 incl. real-Chrome screenshots at 1440/1024/390 px
+- [!] Live: a long answer heard to the last word; type with voice on and off; themes. **User.**
 
 ---
 

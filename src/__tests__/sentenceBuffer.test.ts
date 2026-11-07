@@ -93,4 +93,16 @@ describe('SentenceBuffer', () => {
     await sleep(70);
     expect(out).toEqual([]);
   });
+
+  it('the tail of a long run-on answer goes out in capped pieces', () => {
+    const { buf, out } = collect();
+    // A long run-on tail with no sentence end, delivered at once.
+    buf.append('aaaa '.repeat(30));
+    out.length = 0;
+    buf.append('bbbb '.repeat(60));
+    buf.flush();
+    expect(out.length).toBeGreaterThan(1);
+    for (const s of out) expect(s.length).toBeLessThanOrEqual(220);
+    expect(out.join(' ').replace(/\s+/g, ' ').trim().split(' ').filter((w) => w === 'bbbb').length).toBe(60);
+  });
 });

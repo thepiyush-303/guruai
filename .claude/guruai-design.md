@@ -628,3 +628,101 @@ Notes are a separate background call from the session memory (§6.5). Memory is 
    2. Choose Hindi with Class 9 CBSE, start, and ask "न्यूटन का पहला नियम क्या है?".
    3. Expect a Devanagari transcript, a spoken Hindi reply, and `[latency]` logs.
    4. Switch to Tamil while idle and confirm reconnect logs and a Tamil reply.
+
+---
+
+## 10. Phase 4 — App shell, typed input, voice off, complete speech (implemented)
+
+### 10.1 Why
+Live use showed:
+- no home page, and a crowded setup overlay
+- overlapping Sessions/Notes/Log panels
+- Connect/Mute shown everywhere
+- long answers cut off at the panel edge
+- voice-only input
+- dark-only theme
+- spoken audio missing the last lines of long answers
+
+### 10.2 The app shell (client)
+- **Routes** (`client/src/router.ts`, pushState, no dependency):
+  - `/` Home
+  - `/new` New session
+  - `/s/<id>` the session
+  - `/settings`
+
+  The server answers every extension-less path with `index.html`, so Back/Forward and reloads work.
+- **Sidebar** (`Sidebar.tsx`): New session, search, groups (⋯: new session here / rename / delete), recent sessions as links (⋯: rename / move / delete), Settings, theme switch. Below 900 px it becomes a drawer.
+- **Pages:** `HomePage` (what GuruAI is, continue/start, features, how it works), `NewSessionPage` (one compact form: language select, filterable voice list with samples, class/board, group), `SessionPage`, `SettingsPage`.
+- **State:**
+  - `library.ts` (sessions, groups, voices; React context)
+  - `useVoiceSession` (one session on one socket: thread, mic gating, playback, notes, lesson, log)
+  - `settings.ts` (per-device choices)
+- **The session screen:**
+  - header: title, language badge, voice select with ▶ sample, Notes, End
+  - `Thread`: one chat column; the audio-paced reveal is kept, and it is instant when voice is off
+  - `Composer`: mic, auto-growing text box, Send, Stop, 🔊
+  - **one** `SidePanel` with Notes / Lesson / Log tabs: docked at ≥1100 px, a slide-over below
+
+  The mic and composer exist only here.
+- **Themes:** tokens in `styles/tokens.css`. Light is on `:root`. Dark applies under `prefers-color-scheme` unless `data-theme="light"`, and under `data-theme="dark"`. An inline script applies the saved theme before first paint. The orb reads its colours from CSS variables.
+
+### 10.3 Typed input and voice off (server)
+- `text_input` (IDLE only; otherwise a recoverable `INVALID_STATE`):
+  - stops any speech still playing (`interruptSpeech`, reason `new_question`)
+  - echoes `transcript_final` and persists through `acceptUserTurn`, shared with `stt_final`
+  - then runs the new row `IDLE + text_input → LLM_STREAMING [START_LLM_STREAM]`
+- `set_voice_output` / `session_init.voice_output`: a connection-level flag. When off, the sentence callback never calls Timbre, and switching off mid-answer interrupts it.
+- `stop_speaking`: `interruptSpeech` (reason `stopped`).
+- One session at a time, **newest connection wins**. A new socket retires the old one (close 4000), and the old one's late messages and close are ignored. Moving between session pages opens a fresh socket.
+
+### 10.4 Why long answers lost their end — and the fix
+Measured with `npm run smoke:tts-long` against the real API: a 15-sentence Hinglish answer gave 50.8 s of audio, against about 90 s expected.
+
+**Cause.** A raw socket dump showed Timbre ends **every** request with two `complete` messages:
+
+```
+complete {data:{is_final:true}}
+complete {message:"Streaming completed"}
+```
+
+The client treated each as the end of a request:
+- After the first, it sent the next sentence.
+- The trailing summary then "completed" that next sentence before any of its audio arrived.
+- From then on, every sentence's audio was attributed one slot late.
+- The final sentences' audio arrived after the queue had drained and was discarded.
+
+**Fix** (`gnaniTts.ts`):
+- the end-of-audio message completes the request
+- the summary that follows is expected and swallowed (`pendingSummaries`, reset on `start` and on socket close)
+- audio with no request in flight is counted and logged, never silently dropped
+
+**Result.** After the fix, the same answer gives **94.2 s**, and every sentence carries audio proportional to its text.
+
+**No silent skips any more:**
+- A sentence that gets an `error`, stalls, or loses its socket after audio began is retried once over REST (`gnaniTtsRest.ts`). Already-played bytes are skipped, and the order is kept.
+- If that also fails, a long sentence is split in two and retried.
+- Each run reports `spoken N/M, failed [...]`. `tts_state` carries `spoken` / `failed`, and the client log shows the seconds of audio received.
+
+### 10.5 Verified
+- **186 server tests**, including:
+  - the double-complete regression
+  - the REST second chance (in order, without repeating played audio)
+  - the split
+  - `text_input` state-machine rows
+- **Mock end-to-end (32 checks):**
+  - the typed question is echoed
+  - mid-answer typing is refused politely
+  - voice off makes zero TTS requests and sends no audio
+  - voice on speaks every sentence, with REST fallback for the failing one
+  - stop interrupts
+  - a new connection retires the old one and resumes with history
+  - SPA fallback works
+- **Browser checks (real Chrome)** across Home, New session, Session, Settings, in light and dark, at 1440, 1024 and 390 px:
+  - no horizontal scroll
+  - no mic outside a session
+  - Back/Forward works
+  - notes and KaTeX render
+  - the theme switch works
+  - the voice toggle persists
+  - the drawer and slide-over work
+

@@ -1,0 +1,387 @@
+/* ============================================================
+   panel.css — the session side panel (Notes / Lesson / Log), the
+   notes themselves, and the lesson plan.
+   ============================================================ */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.tab__badge {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.panel__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* Slide-over below 1100px */
+@media (max-width: 1099px) {
+  .session.has-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .panel {
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: 50;
+    width: min(420px, 92vw);
+    box-shadow: var(--shadow-lg);
+    animation: slide-in 0.2s ease;
+  }
+
+  .panel-scrim {
+    z-index: 45;
+  }
+}
+
+@media (max-width: 1099px) and (min-width: 900px) {
+  /* The drawer scrim is only defined for narrow screens; this one needs it here too. */
+  .panel-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: var(--scrim);
+  }
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+/* ── Notes ─────────────────────────────────────────────────── */
+
+.notes {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.notes__head {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.notes__head .switch {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.notes__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 16px;
+}
+
+.notes__subject {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.notes__topic {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.notes__empty {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.notes__section {
+  margin-top: 20px;
+}
+
+.notes__section h3 {
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.note {
+  position: relative;
+  margin: 8px 0;
+  padding: 8px 10px 8px 12px;
+  border-left: 3px solid var(--border-strong);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--surface-2);
+  font-size: 14px;
+  line-height: 1.55;
+  transition: background 0.6s, box-shadow 0.6s;
+}
+
+.note--point {
+  border-left-color: var(--border-strong);
+  background: transparent;
+}
+
+.note--definition {
+  border-left-color: var(--note-definition);
+}
+
+.note--formula {
+  border-left-color: var(--note-formula);
+}
+
+.note--example {
+  border-left-color: var(--note-example);
+}
+
+.note--tip {
+  border-left-color: var(--note-tip);
+}
+
+.note--question {
+  border-left-color: var(--note-question);
+}
+
+.note.is-fresh {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.note__tag {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.note--definition .note__tag {
+  color: var(--note-definition);
+}
+
+.note--formula .note__tag {
+  color: var(--note-formula);
+}
+
+.note--example .note__tag {
+  color: var(--note-example);
+}
+
+.note--tip .note__tag {
+  color: var(--note-tip);
+}
+
+.note--question .note__tag {
+  color: var(--note-question);
+}
+
+.note__formula {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
+.note__formula .katex-display {
+  margin: 4px 0;
+}
+
+.note__text {
+  white-space: pre-wrap;
+}
+
+.notes__paused {
+  margin-top: 16px;
+  color: var(--warn);
+  font-size: 13px;
+}
+
+.notes__foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Lesson plan ───────────────────────────────────────────── */
+
+.lesson__label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lesson__topic {
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.lesson__count {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.lesson__chunks {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lesson__chunk {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.lesson__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+}
+
+.lesson__chunk.is-explained .lesson__dot {
+  border-color: var(--accent);
+}
+
+.lesson__chunk.is-understood .lesson__dot {
+  border-color: var(--success);
+  background: var(--success);
+}
+
+.lesson__chunk.is-struggling .lesson__dot {
+  border-color: var(--warn);
+  background: var(--warn);
+}
+
+.lesson__chunk.is-next .lesson__title {
+  font-weight: 600;
+}
+
+.lesson__status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lesson__chunk.is-next .lesson__status {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.gist {
+  margin-top: 22px;
+}
+
+.gist h3 {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gist p {
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ── Event log ─────────────────────────────────────────────── */
+
+.log {
+  font-family: var(--face-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.log__line {
+  padding: 2px 0;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+
+.log__line.is-out {
+  color: var(--accent-text);
+}
+
+.log__line.is-err {
+  color: var(--danger);
+}
+
+.log__at {
+  margin-right: 8px;
+  color: var(--muted);
+}
