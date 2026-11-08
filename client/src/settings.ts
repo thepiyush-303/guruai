@@ -40,8 +40,9 @@ export function loadPrefs(): Preferences {
   return { language: 'en' };
 }
 
-export function savePrefs(prefs: Preferences): void {
-  write(PREFS_KEY, JSON.stringify(prefs));
+/** Language, voice, class and board are remembered; what to study is chosen each time. */
+export function savePrefs({ language, voice, grade, board }: Preferences): void {
+  write(PREFS_KEY, JSON.stringify({ language, voice, grade, board }));
 }
 
 // ── Small boolean / string settings, shared across components ─

@@ -4,12 +4,13 @@
 // ============================================================
 
 import * as crypto from 'crypto';
-import { SessionContext, ServerState, ConversationMessage, SessionPreferences, Board } from './types';
+import { SessionContext, ServerState, ConversationMessage, SessionPreferences, Board, StudyChoice } from './types';
 import { getGroup, getSession, loadSessionTurns, recentOtherSessions } from './contextStore';
 import { DEFAULT_LANGUAGE, isLanguageId } from './languages';
 import { defaultVoice, isVoice } from './voices';
 import { buildTeacherPrompt } from './prompts/teacher';
-import { emptyMemory, loadSessionMemory } from './memory/sessionMemory';
+import { emptyMemory, loadSessionMemory, saveSessionMemory } from './memory/sessionMemory';
+import { findOpenCategory, findTopic, resolveStudy } from './catalog';
 import { loadProfile } from './memory/learnerProfile';
 import { loadNotes } from './notes/notesAgent';
 
@@ -23,6 +24,19 @@ export function isValidSessionId(id: unknown): id is string {
 
 const BOARDS: Board[] = ['CBSE', 'ICSE', 'STATE', 'OTHER'];
 const GRADES = ['6', '7', '8', '9', '10', '11', '12', 'college'];
+const MAX_ASK_CHARS = 500;
+
+/** A study choice from the client, kept only if the catalog knows it. */
+function normalizeStudy(raw: unknown): StudyChoice | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  if (o.kind === 'topic' && findTopic(o.topicId)) return { kind: 'topic', topicId: o.topicId as string };
+  if (o.kind === 'open' && findOpenCategory(o.categoryId)) {
+    const ask = typeof o.ask === 'string' ? o.ask.replace(/\s+/g, ' ').trim().slice(0, MAX_ASK_CHARS) : '';
+    return ask ? { kind: 'open', categoryId: o.categoryId as string, ask } : { kind: 'open', categoryId: o.categoryId as string };
+  }
+  return undefined;
+}
 
 /** Coerce untrusted client input into valid preferences, falling back to `base`. */
 export function normalizePreferences(
@@ -38,6 +52,13 @@ export function normalizePreferences(
   }
   if (raw && 'board' in raw) {
     out.board = BOARDS.includes(raw.board as Board) ? raw.board : undefined;
+  }
+  if (raw && 'study' in raw) out.study = normalizeStudy(raw.study);
+  // A syllabus topic knows its level: the program sets class and board.
+  const topic = out.study?.kind === 'topic' ? findTopic(out.study.topicId) : null;
+  if (topic) {
+    out.grade = topic.program.level.grade ?? out.grade;
+    out.board = topic.program.level.board ?? out.board;
   }
   return out;
 }
@@ -58,7 +79,24 @@ function systemContentFor(sessionId: string, prefs: SessionPreferences): string 
     memory: loadSessionMemory(sessionId).memory,
     recentSessions: recentOtherSessions(sessionId).map((s) => s.title),
     notesEnabled: loadNotes(sessionId).enabled,
+    study: resolveStudy(prefs.study),
   });
+}
+
+/**
+ * A fresh session on a syllabus topic starts with its lesson plan already in
+ * the session memory: the first answer can teach chunk 1 with no planning
+ * call, and the lesson panel shows the plan at once.
+ */
+function seedTopicMemory(sessionId: string, study: StudyChoice | undefined): void {
+  const found = study?.kind === 'topic' ? findTopic(study.topicId) : null;
+  if (!found) return;
+  const { topic } = found;
+  saveSessionMemory(sessionId, {
+    ...emptyMemory(),
+    topic: topic.title,
+    lesson: { goal: topic.summary, chunks: topic.chunks.map((title) => ({ title, status: 'pending' })), next: 0 },
+  }, 0);
 }
 
 /**
@@ -124,6 +162,9 @@ export function openSessionContext(req: OpenRequest): OpenResult {
       voice: saved.voice ?? undefined,
       grade: saved.grade ?? undefined,
       board: (saved.board ?? undefined) as Board | undefined,
+      study: saved.study_kind === 'topic'
+        ? { kind: 'topic', topicId: saved.study_ref ?? '' }
+        : saved.study_kind === 'open' ? { kind: 'open', categoryId: saved.study_ref ?? '' } : undefined,
     });
     const ctx = createSession(sessionId, prefs);
     ctx.groupId = saved.group_id;
@@ -132,7 +173,9 @@ export function openSessionContext(req: OpenRequest): OpenResult {
 
   // A fresh session must not collide with a saved one.
   const id = getSession(sessionId) ? crypto.randomUUID() : sessionId;
-  const ctx = createSession(id, normalizePreferences(req.preferences));
+  const prefs = normalizePreferences(req.preferences);
+  seedTopicMemory(id, prefs.study);
+  const ctx = createSession(id, prefs);
   const groupId = typeof req.groupId === 'string' && getGroup(req.groupId) ? req.groupId : null;
   ctx.groupId = groupId;
   return { ctx, resumed: false, title: null, groupId };

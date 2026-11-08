@@ -12,6 +12,7 @@
 //   PATCH  /api/settings      {memory_enabled}   switch remembering personal facts on/off
 //   GET    /api/notes/:id                        a session's study notes (JSON)
 //   GET    /api/notes/:id/pdf                    the notes as a PDF download
+//   GET    /api/catalog                          the built-in syllabus + open-chat areas
 //   GET    /api/voices                           Timbre voices for the configured model
 //   GET    /api/voice-preview?voice=&language=   a short spoken sample (audio/wav)
 //
@@ -36,6 +37,27 @@ import { loadNotes, notesDefault, setNotesDefault } from './notes/notesAgent';
 import { deleteSessionPdf, pdfAvailable, pdfForDownload, pdfUnavailableReason } from './notes/pdf';
 import { isValidSessionId } from './session';
 import * as fs from 'fs';
+import * as zlib from 'zlib';
+import { catalogPayload, resolveStudy, studyLabel } from './catalog';
+
+/** The catalog never changes while the server runs: serialise and gzip it once. */
+let catalogBody: { raw: Buffer; gz: Buffer } | null = null;
+function catalogResponse(req: http.IncomingMessage, res: http.ServerResponse): void {
+  if (!catalogBody) {
+    const raw = Buffer.from(JSON.stringify(catalogPayload()));
+    catalogBody = { raw, gz: zlib.gzipSync(raw) };
+  }
+  const gzip = /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''));
+  const body = gzip ? catalogBody.gz : catalogBody.raw;
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': body.length,
+    'Cache-Control': 'public, max-age=3600',
+    Vary: 'Accept-Encoding',
+    ...(gzip ? { 'Content-Encoding': 'gzip' } : {}),
+  });
+  res.end(body);
+}
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -68,8 +90,15 @@ async function readJson(req: http.IncomingMessage): Promise<Record<string, unkno
   throw new HttpError(400, 'Malformed JSON');
 }
 
+/** Sessions with a readable label for what each one studies. */
 function snapshot() {
-  return { groups: listGroups(), sessions: listSessions() };
+  const sessions = listSessions().map((s) => {
+    const study = resolveStudy(
+      s.study_kind === 'topic' ? { kind: 'topic', topicId: s.study_ref ?? '' } : s.study_kind === 'open' ? { kind: 'open', categoryId: s.study_ref ?? '' } : null,
+    );
+    return { ...s, study: study ? { kind: study.kind, ref: s.study_ref, ...studyLabel(study) } : null };
+  });
+  return { groups: listGroups(), sessions };
 }
 
 async function sessionsRoute(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
@@ -221,6 +250,11 @@ export async function handleApi(req: http.IncomingMessage, res: http.ServerRespo
     }
 
     if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed');
+
+    if (resource === 'catalog' && !id) {
+      catalogResponse(req, res);
+      return;
+    }
 
     if (resource === 'voices' && !id) {
       json(res, 200, { model: ttsModel(), default_voice: defaultVoice(), voices: voicesForModel() });

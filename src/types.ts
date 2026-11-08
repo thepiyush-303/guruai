@@ -78,7 +78,17 @@ export interface SessionPreferences {
   /** "6".."12" or "college"; optional. */
   grade?: string;
   board?: Board;
+  /** What this session is about: a syllabus topic, or an open-chat area. */
+  study?: StudyChoice;
 }
+
+/**
+ * A syllabus topic (see src/catalog), or free chat in a category. `ask` is a
+ * first question to answer straight away instead of the greeting.
+ */
+export type StudyChoice =
+  | { kind: 'topic'; topicId: string }
+  | { kind: 'open'; categoryId: string; ask?: string };
 
 // ── Client → Server JSON Messages (PRD §3.3.1) ───────────────
 
@@ -383,7 +393,7 @@ export interface SessionContext {
   /** Group a new session is saved into on its first turn. */
   groupId?: string | null;
   /** Set by the session_opener event; consumed by the next START_LLM_STREAM. */
-  pendingOpener?: 'new' | 'resumed';
+  pendingOpener?: 'new' | 'resumed' | 'open';
   /** The LLM turn in flight is the opener: its reply is spoken but not stored. */
   openerActive?: boolean;
   conversationHistory: ConversationMessage[];

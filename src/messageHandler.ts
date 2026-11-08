@@ -431,7 +431,16 @@ export function handleInternalEvent(
     case 'session_opener': {
       // Only when nothing else is happening (the student may already be talking).
       if (ctx.state !== ServerState.IDLE) break;
-      ctx.pendingOpener = p?.kind === 'resumed' ? 'resumed' : 'new';
+      // A question typed in the picker: answered as a real first turn.
+      const ask = typeof p?.text === 'string' ? p.text.trim().slice(0, MAX_TYPED_CHARS) : '';
+      if (p?.kind === 'ask' && ask) {
+        ctx.turnStartedAt = Date.now();
+        acceptUserTurn(ws, ctx, ask, { duration_ms: 0 });
+        runTransition(ws, ctx, 'text_input');
+        break;
+      }
+      const kinds = ['resumed', 'open'] as const;
+      ctx.pendingOpener = kinds.find((k) => k === p?.kind) ?? 'new';
       runTransition(ws, ctx, 'session_opener');
       break;
     }

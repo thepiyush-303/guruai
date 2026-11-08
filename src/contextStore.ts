@@ -53,6 +53,9 @@ export interface SessionRecord {
   voice: string | null;
   grade: string | null;
   board: string | null;
+  /** 'topic' (a syllabus topic id in study_ref) or 'open' (a category id); null for a plain session. */
+  study_kind: string | null;
+  study_ref: string | null;
   created_ts: number;
   updated_ts: number;
 }
@@ -79,6 +82,9 @@ export interface SessionMeta {
   voice?: string;
   grade?: string;
   board?: string;
+  /** Only applied when the session row is first created. */
+  studyKind?: string;
+  studyRef?: string;
 }
 
 const TITLE_MAX = 80;
@@ -148,6 +154,8 @@ export function initContextStore(dbPath = process.env.VANI_DB_PATH ?? 'data/vani
     const cols = new Set((db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>).map((c) => c.name));
     if (!cols.has('group_id')) db.exec('ALTER TABLE sessions ADD COLUMN group_id TEXT');
     if (!cols.has('title_source')) db.exec('ALTER TABLE sessions ADD COLUMN title_source TEXT');
+    if (!cols.has('study_kind')) db.exec('ALTER TABLE sessions ADD COLUMN study_kind TEXT');
+    if (!cols.has('study_ref')) db.exec('ALTER TABLE sessions ADD COLUMN study_ref TEXT');
     db.exec(
       `CREATE TABLE IF NOT EXISTS session_groups (
         id          TEXT    PRIMARY KEY,
@@ -257,15 +265,16 @@ export function upsertSession(meta: SessionMeta): void {
   const now = Date.now();
   try {
     db.prepare(
-      `INSERT INTO sessions (id, group_id, language, voice, grade, board, created_ts, updated_ts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO sessions (id, group_id, language, voice, grade, board, study_kind, study_ref, created_ts, updated_ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          language = excluded.language, voice = excluded.voice,
          grade = excluded.grade, board = excluded.board, updated_ts = excluded.updated_ts`,
     ).run(
       meta.id,
       meta.groupId && getGroup(meta.groupId) ? meta.groupId : null,
-      meta.language, meta.voice ?? null, meta.grade ?? null, meta.board ?? null, now, now,
+      meta.language, meta.voice ?? null, meta.grade ?? null, meta.board ?? null,
+      meta.studyKind ?? null, meta.studyRef ?? null, now, now,
     );
   } catch (err) {
     console.error('[context] failed to upsert session:', err);
@@ -423,7 +432,7 @@ export function getSession(id: string): SessionRecord | null {
   if (!enabled || !db) return null;
   try {
     const row = db
-      .prepare('SELECT id, title, title_source, group_id, language, voice, grade, board, created_ts, updated_ts FROM sessions WHERE id = ?')
+      .prepare('SELECT id, title, title_source, group_id, language, voice, grade, board, study_kind, study_ref, created_ts, updated_ts FROM sessions WHERE id = ?')
       .get(id) as SessionRecord | undefined;
     return row ?? null;
   } catch (err) {
@@ -438,7 +447,7 @@ export function listSessions(limit = 200): SessionListItem[] {
   try {
     return db
       .prepare(
-        `SELECT s.id, s.title, s.title_source, s.group_id, s.language, s.voice, s.grade, s.board, s.created_ts, s.updated_ts,
+        `SELECT s.id, s.title, s.title_source, s.group_id, s.language, s.voice, s.grade, s.board, s.study_kind, s.study_ref, s.created_ts, s.updated_ts,
                 (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id) AS turn_count,
                 (SELECT substr(content, 1, 140) FROM turns t WHERE t.session_id = s.id ORDER BY t.id DESC LIMIT 1) AS last_text
            FROM sessions s

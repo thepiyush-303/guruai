@@ -3,7 +3,7 @@
 // Same-origin in production; proxied by Vite in development.
 // ============================================================
 
-import type { LanguageId, LearnerProfile, SessionGroup, SessionSummary, VoiceOption } from './protocol.ts';
+import type { Catalog, LanguageId, LearnerProfile, SessionGroup, SessionSummary, VoiceOption } from './protocol.ts';
 
 export interface ProfileSnapshot {
   memory_enabled: boolean;
@@ -25,6 +25,16 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
   return data;
+}
+
+/** The built-in syllabus. Fetched once per page load and shared. */
+let catalogPromise: Promise<Catalog> | null = null;
+export function fetchCatalog(): Promise<Catalog> {
+  catalogPromise ??= request<Catalog>('GET', '/api/catalog').catch((err: Error) => {
+    catalogPromise = null; // let a later visit retry
+    throw err;
+  });
+  return catalogPromise;
 }
 
 export const fetchSessions = () => request<SessionsSnapshot>('GET', '/api/sessions');

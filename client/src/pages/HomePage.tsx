@@ -10,6 +10,11 @@ import { LANGUAGE_OPTIONS, languageOption } from '../protocol.ts';
 
 const FEATURES: Array<{ icon: IconName; title: string; text: string }> = [
   {
+    icon: 'book',
+    title: 'Follow your syllabus — or ask anything',
+    text: 'Pick a topic from Class 9–12, B.Tech CSE, JEE, NEET or GATE and the lesson starts at once. Or open a chat about coding, gadgets, careers, exams or life.',
+  },
+  {
     icon: 'bulb',
     title: 'Intuition first',
     text: 'One small idea at a time: what it is, why it matters, then an everyday analogy — cricket, chai, a pressure cooker — before the textbook term.',
@@ -32,7 +37,8 @@ const FEATURES: Array<{ icon: IconName; title: string; text: string }> = [
 ];
 
 const STEPS: Array<{ title: string; text: string }> = [
-  { title: 'Pick a language and a voice', text: 'Choose how GuruAI speaks to you, and your class and board if you like.' },
+  { title: 'Pick what to learn', text: 'Choose a syllabus topic in a few taps or search for it — or pick an open-chat area.' },
+  { title: 'Choose a language and a voice', text: 'Learn in English, Hindi, Hinglish or eight more Indian languages.' },
   { title: 'Ask — by voice or by typing', text: 'Talk naturally, or type. Turn spoken replies off whenever you only want text.' },
   { title: 'Learn step by step', text: 'Answer the check questions, ask for examples, and keep the notes for revision.' },
 ];
@@ -46,16 +52,17 @@ export function HomePage() {
     <div className="page page--home">
       <section className="hero">
         <div className="hero__copy">
-          <p className="eyebrow">Your patient study teacher</p>
+          <p className="eyebrow">For school, college, exams and beyond</p>
           <h1 className="hero__title">Understand anything, in your own language.</h1>
           <p className="hero__lede">
-            GuruAI explains one idea at a time with examples from your daily life, checks that it made sense, and writes your
-            notes while you listen. Speak or type — in {LANGUAGE_OPTIONS.length} Indian languages.
+            Pick a topic from your syllabus — or ask about anything — and GuruAI explains one idea at a time with examples from
+            your daily life, checks that it made sense, and writes your notes while you listen. Speak or type — in{' '}
+            {LANGUAGE_OPTIONS.length} Indian languages.
           </p>
           <div className="hero__actions">
             <Link href="/new" className="btn btn--primary btn--large">
               <Icon name="plus" />
-              Start a new session
+              Start learning
             </Link>
             {last && (
               <Link href={`/s/${last.id}`} className="btn btn--large" title={last.title ?? undefined}>
@@ -80,7 +87,7 @@ export function HomePage() {
           <div className="home-section__head">
             <h2>Pick up where you left off</h2>
             <Link href="/new" className="text-link">
-              New session
+              Start learning
             </Link>
           </div>
           <ul className="card-grid">

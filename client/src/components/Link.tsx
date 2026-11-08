@@ -11,14 +11,16 @@ interface Props extends AnchorHTMLAttributes<HTMLAnchorElement> {
   /** Called after an in-app navigation (e.g. to close the mobile drawer). */
   onNavigate?: () => void;
   state?: unknown;
+  /** Keep the scroll position (e.g. opening a sheet over the page). */
+  keepScroll?: boolean;
 }
 
-export function Link({ href, onNavigate, state, onClick, ...rest }: Props) {
+export function Link({ href, onNavigate, state, keepScroll, onClick, ...rest }: Props) {
   const handle = (e: MouseEvent<HTMLAnchorElement>) => {
     onClick?.(e);
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
-    navigate(href, state ?? null);
+    navigate(href, state ?? null, { keepScroll });
     onNavigate?.();
   };
   return <a href={href} onClick={handle} {...rest} />;
