@@ -18,8 +18,9 @@ import { voicesForModel } from '../voices';
 import type { SessionPreferences } from '../types';
 import { renderProfile, type LearnerProfile } from '../memory/learnerProfile';
 import type { SessionMemory } from '../memory/sessionMemory';
+import type { ResolvedStudy } from '../catalog';
 
-export type OpenerKind = 'new' | 'resumed';
+export type OpenerKind = 'new' | 'resumed' | 'open';
 
 export interface TeacherPromptInput {
   prefs: SessionPreferences;
@@ -29,6 +30,8 @@ export interface TeacherPromptInput {
   recentSessions: string[];
   /** Whether written notes are being kept for this session (undefined: don't mention). */
   notesEnabled?: boolean;
+  /** The syllabus topic or open-chat area chosen for this session. */
+  study?: ResolvedStudy | null;
 }
 
 const STATUS_WORD: Record<string, string> = {
@@ -110,6 +113,20 @@ function understandingBlock(memory: SessionMemory): string[] {
   return out;
 }
 
+/** What this session is about: a syllabus topic (with its outline) or an open-chat area. */
+function studyBlock(study: ResolvedStudy | null | undefined): string {
+  if (!study) return '';
+  if (study.kind === 'open') return `CONVERSATION AREA — ${study.category.title}:\n${study.category.promptHint}`;
+  const { topic, unit, subject, program } = study.context;
+  return [
+    `SYLLABUS FOCUS: ${program.title} (${program.note}) · ${subject.title} · ${unit.title} → ${topic.title}.`,
+    `What it covers: ${topic.summary}`,
+    `Lesson plan, in order: ${topic.chunks.map((c, i) => `${i + 1}. ${c}`).join('; ')}.`,
+    topic.keyTerms.length ? `Key terms and formulas to introduce at the right moment: ${topic.keyTerms.join('; ')}.` : '',
+    'The student chose this topic from their syllabus: teach it chunk by chunk in this order, at the depth their course expects. If this is your first reply in the session, greet them in a few words and start the first chunk right away — do not ask what they want to learn. Answer side questions briefly, then come back to the lesson.',
+  ].filter(Boolean).join('\n');
+}
+
 function section(title: string, lines: string[]): string {
   return lines.length ? `\n${title}:\n${lines.join('\n')}` : '';
 }
@@ -121,7 +138,7 @@ function notesLine(on: boolean | undefined): string {
     : 'NOTES: the student has switched written notes off for this session. If they ask for notes again, simply agree in a few words.';
 }
 
-export function buildTeacherPrompt({ prefs, profile, memory, recentSessions, notesEnabled }: TeacherPromptInput): string {
+export function buildTeacherPrompt({ prefs, profile, memory, recentSessions, notesEnabled, study }: TeacherPromptInput): string {
   const lang = getLanguage(prefs.language);
   const gender = voicesForModel().find((v) => v.id === prefs.voice)?.gender;
   const selfForms = gender
@@ -129,7 +146,7 @@ export function buildTeacherPrompt({ prefs, profile, memory, recentSessions, not
     : '';
 
   return [
-    'You are GuruAI, a warm, patient and encouraging teacher for Indian school and college students.',
+    'You are GuruAI, a warm, patient and encouraging teacher for every kind of learner in India: school and college students, exam aspirants, working people and the simply curious.',
     'Your goal is real understanding: the student should be able to explain the idea back in their own words.',
     'Keep the student talking: a good lesson is a conversation, not a lecture.',
     levelLine(prefs, profile),
@@ -141,6 +158,7 @@ export function buildTeacherPrompt({ prefs, profile, memory, recentSessions, not
     '',
     SPOKEN,
     notesLine(notesEnabled),
+    studyBlock(study),
     section('ABOUT THE STUDENT (remembered from earlier conversations — use naturally, never recite)', renderProfile(profile)),
     section('THIS SESSION SO FAR', lessonBlock(memory)),
     section("STUDENT'S UNDERSTANDING", understandingBlock(memory)),
@@ -159,8 +177,21 @@ export function buildTeacherPrompt({ prefs, profile, memory, recentSessions, not
  * The instruction for GuruAI's first words when a session opens (sent as the
  * "user" turn of the opener; it is never stored or shown).
  */
-export function openerInstruction(kind: OpenerKind, profile: LearnerProfile, memory: SessionMemory, notesOn = false): string {
+export function openerInstruction(
+  kind: OpenerKind,
+  profile: LearnerProfile,
+  memory: SessionMemory,
+  notesOn = false,
+  study: ResolvedStudy | null = null,
+): string {
   const name = profile.name ? ` The student's name is ${profile.name}; greet them by name.` : '';
+  if (kind === 'open' && study?.kind === 'open') {
+    return (
+      `[A new open conversation about "${study.category.title}" has just started.] Greet the learner warmly in one short sentence.${name} ` +
+      `Then ask what they would like to explore, mentioning one or two example ideas from: ${study.category.starters.slice(0, 3).join('; ')}. ` +
+      'Keep it under 45 words and end with that question.'
+    );
+  }
   if (kind === 'resumed' && (memory.gist || memory.lesson)) {
     const next = memory.lesson && memory.lesson.next < memory.lesson.chunks.length ? memory.lesson.chunks[memory.lesson.next].title : null;
     return (

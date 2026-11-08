@@ -15,6 +15,7 @@ import { SerialJobs } from '../util/serialJobs';
 import { loadNotes, setNotesEnabled } from '../notes/notesAgent';
 import { getLanguage } from '../languages';
 import { completeJson, hasBackgroundLlm } from '../llmText';
+import { findTopic } from '../catalog';
 import { LIST_KEYS, SCALAR_KEYS, loadProfile, memoryEnabled, mergeProfileFacts, renderProfile } from './learnerProfile';
 import {
   loadSessionMemory, normalizeSessionMemory, saveSessionMemory, viewOf, MAX_CHUNKS,
@@ -64,7 +65,8 @@ async function runOnce(sessionId: string): Promise<void> {
   const turns = all.slice(-MAX_NEW_TURNS);
   const lastId = all[all.length - 1].id ?? uptoTurnId;
 
-  const prompt = buildUpdatePrompt(prev, renderProfile(loadProfile()), turns, getLanguage(session.language).label, memoryEnabled());
+  const syllabusTopic = session.study_kind === 'topic' ? findTopic(session.study_ref)?.topic.title ?? null : null;
+  const prompt = buildUpdatePrompt(prev, renderProfile(loadProfile()), turns, getLanguage(session.language).label, memoryEnabled(), syllabusTopic);
 
   let result: Record<string, unknown>;
   try {
@@ -98,6 +100,7 @@ export function buildUpdatePrompt(
   turns: Array<{ role: string; content: string }>,
   languageLabel: string,
   rememberFacts: boolean,
+  syllabusTopic: string | null = null,
 ): string {
   const transcript = turns
     .map((t) => `${t.role === 'user' ? 'STUDENT' : 'TEACHER'}: ${t.content.slice(0, 1500)}`)
@@ -130,7 +133,8 @@ Return ONE JSON object: {"memory": {...}, "profile_facts": [...], "notes_request
     {"goal": one sentence, "chunks": [{"title": short name of one small idea, "status": "pending" | "explained" | "understood" | "struggling"}], "next": index (0-based) of the chunk to teach next}
   Split the topic into 3–${MAX_CHUNKS} chunks, simplest first, building on each other. Keep the existing chunks and update their status from the new turns:
     "explained" once the teacher taught it; "understood" when the student answered correctly or said they get it; "struggling" when they answered wrongly or were confused.
-  If the student switched to a different topic, replace the plan with one for the new topic.
+  If the student switched to a different topic, replace the plan with one for the new topic.${syllabusTopic ? `
+  This session follows the syllabus topic "${syllabusTopic}": while the student stays on it, keep the given chunk titles and their order exactly — only update the statuses and "next".` : ''}
 - "student": {"understood": [...], "struggling": [...], "misconceptions": [...]} — short phrases, most recent last, max 5 each.
 - "last_offer": what the teacher's LAST message ended with: "example" (offered an example), "next_chunk" (offered to move on), "quiz" (asked a question), or null.
 

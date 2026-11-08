@@ -15,6 +15,7 @@ import { viewOf, type SessionContextView } from './memory/sessionMemory';
 import { loadNotes, notesDefault, type NotesState } from './notes/notesAgent';
 import { pdfAvailable, pdfUnavailableReason } from './notes/pdf';
 import { loadSessionTurns, getSession, upsertSession } from './contextStore';
+import { findTopic } from './catalog';
 
 const SERVER_VERSION = '0.3.0';
 const OPENER_DELAY_MS = Number(process.env.OPENER_DELAY_MS ?? 400);
@@ -94,11 +95,19 @@ export function openSession(ws: WebSocket, req: OpenRequest): SessionContext {
   sendSessionContext(ws, ctx.sessionId, currentView(ctx.sessionId));
   sendNotesUpdate(ws, ctx.sessionId, loadNotes(ctx.sessionId));
 
-  // GuruAI speaks first: a greeting, or a welcome back with a recap. Slightly
-  // delayed so the client has applied the acks and opened its mic gate state.
-  const kind = resumed && turns.length > 0 ? 'resumed' : 'new';
+  // GuruAI speaks first: a welcome back with a recap, the first chunk of a
+  // chosen syllabus topic, a greeting — or, when the learner already typed a
+  // question in the picker, the answer to it. Slightly delayed so the client
+  // has applied the acks and opened its mic gate state.
+  // A topic lesson opens with a real first turn, so the first chunk is part of
+  // the stored lesson (and the memory marks it explained).
+  const study = ctx.preferences.study;
+  const topic = study?.kind === 'topic' ? findTopic(study.topicId) : null;
+  const fresh = !(resumed && turns.length > 0);
+  const ask = !fresh ? undefined : topic ? `Teach me: ${topic.topic.title}` : study?.kind === 'open' ? study.ask : undefined;
+  const kind = !fresh ? 'resumed' : ask ? 'ask' : study?.kind === 'open' ? 'open' : 'new';
   setTimeout(() => {
-    if (SessionStore.get() === ctx) emitInternal('session_opener', { kind });
+    if (SessionStore.get() === ctx) emitInternal('session_opener', { kind, text: ask });
   }, OPENER_DELAY_MS);
 
   return ctx;
@@ -112,5 +121,10 @@ export function persistSessionSettings(ctx: SessionContext): void {
 
 export function saveSessionRow(ctx: SessionContext): void {
   const p = ctx.preferences;
-  upsertSession({ id: ctx.sessionId, groupId: ctx.groupId, language: p.language, voice: p.voice, grade: p.grade, board: p.board });
+  const study = p.study;
+  upsertSession({
+    id: ctx.sessionId, groupId: ctx.groupId, language: p.language, voice: p.voice, grade: p.grade, board: p.board,
+    studyKind: study?.kind,
+    studyRef: study?.kind === 'topic' ? study.topicId : study?.kind === 'open' ? study.categoryId : undefined,
+  });
 }

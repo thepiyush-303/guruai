@@ -16,6 +16,7 @@ import { SidePanel, type PanelTab } from '../components/SidePanel.tsx';
 import { Thread } from '../components/Thread.tsx';
 import { useMediaQuery } from '../hooks/useMediaQuery.ts';
 import { useVoiceSession } from '../hooks/useVoiceSession.ts';
+import { studyLabel, useCatalog } from '../catalog.ts';
 import { useLibrary } from '../library.ts';
 import { historyState, type FreshSessionState } from '../router.ts';
 import { GRADE_OPTIONS, languageOption, type Preferences } from '../protocol.ts';
@@ -72,9 +73,11 @@ function SessionView({ id, start }: { id: string; start: Start }) {
   const setPanelOpen = (open: boolean) => (wide ? setPanelPref(open) : setNarrowPanel(open));
   const [tab, setTab] = useState<PanelTab>('notes');
 
+  const catalog = useCatalog();
+  const study = studyLabel(catalog.status === 'ready' ? catalog.catalog : null, s.prefs.study);
   const lang = languageOption(s.prefs.language);
   const grade = GRADE_OPTIONS.find((g) => g.value === s.prefs.grade)?.label;
-  const title = s.title || (s.turns.length ? 'Untitled session' : 'New session');
+  const title = s.title || study?.title || (s.turns.length ? 'Untitled session' : 'New session');
   const started = s.turns.length > 0 || s.reply.text.length > 0 || !!s.userDraft;
   const thinking = s.turn === 'thinking' && !s.reply.text;
 
@@ -83,9 +86,13 @@ function SessionView({ id, start }: { id: string; start: Start }) {
       <div className="hero-orb__canvas">
         <Orb readLevel={s.readLevel} source={s.source} dim={!s.connected} />
       </div>
-      <p className="hero-orb__title">{s.connected ? 'Say hello, or type a question' : 'Connecting…'}</p>
+      <p className="hero-orb__title">
+        {!s.connected ? 'Connecting…' : s.prefs.study?.kind === 'topic' && study ? `Starting your lesson on ${study.title}…` : 'Say hello, or type a question'}
+      </p>
       <p className="hero-orb__hint">
-        Ask about any topic — “What is photosynthesis?”, “Explain Newton’s third law”, “Help me with fractions”.
+        {s.prefs.study?.kind === 'topic'
+          ? 'GuruAI is opening part 1. Interrupt any time to ask a question, or say “give me an example”.'
+          : 'Ask about any topic — “What is photosynthesis?”, “Explain Newton’s third law”, “Help me with fractions”.'}
       </p>
     </div>
   );
@@ -100,8 +107,16 @@ function SessionView({ id, start }: { id: string; start: Start }) {
               <span className="badge" lang={s.prefs.language === 'hinglish' ? 'hi' : s.prefs.language}>
                 {lang.nativeLabel}
               </span>
-              {grade && <span>{grade}</span>}
-              {s.prefs.board && <span>{s.prefs.board === 'STATE' ? 'State board' : s.prefs.board}</span>}
+              {study ? (
+                <span className="session__study" title={study.title}>
+                  {study.subtitle}
+                </span>
+              ) : (
+                <>
+                  {grade && <span>{grade}</span>}
+                  {s.prefs.board && <span>{s.prefs.board === 'STATE' ? 'State board' : s.prefs.board}</span>}
+                </>
+              )}
             </p>
           </div>
           <div className="session__tools">

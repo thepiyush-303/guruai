@@ -2,7 +2,7 @@
 // App — the shell: the sidebar on the left, the current page on the right.
 //
 //   /            HomePage        what GuruAI is; continue or start
-//   /new         NewSessionPage  language, voice, class/board
+//   /new         NewSessionPage  pick a syllabus topic or open chat; language, voice
 //   /s/<id>      SessionPage     the voice teacher (mic, composer, notes)
 //   /settings    SettingsPage    theme, replies, notes, memory
 //
@@ -22,7 +22,7 @@ import { SettingsPage } from './pages/SettingsPage.tsx';
 import { useRoute } from './router.ts';
 import { useSidebarCollapsed, useTheme } from './settings.ts';
 
-const TITLES = { home: 'GuruAI', new: 'New session · GuruAI', settings: 'Settings · GuruAI', session: 'GuruAI' } as const;
+const TITLES = { home: 'GuruAI', new: 'Start learning · GuruAI', settings: 'Settings · GuruAI', session: 'GuruAI' } as const;
 
 export default function App() {
   const library = useLibraryState();
@@ -73,7 +73,7 @@ export default function App() {
           </header>
           <main id="main" className="shell__page">
             {route.name === 'home' && <HomePage />}
-            {route.name === 'new' && <NewSessionPage key={route.groupId ?? ''} groupId={route.groupId} />}
+            {route.name === 'new' && <NewSessionPage key={route.groupId ?? ''} groupId={route.groupId} picker={route.picker} />}
             {route.name === 'session' && <SessionPage key={route.id} id={route.id} />}
             {route.name === 'settings' && <SettingsPage />}
           </main>

@@ -1,137 +1,111 @@
 // ============================================================
-// NewSessionPage — one compact form: language, the teacher's voice (hear
-// it first), class and board, and optionally a group. Start opens the
-// session. The last choices are remembered on this device.
+// NewSessionPage — "Start learning". The learner picks a path (school,
+// college, exams or open chat), then a program, subject and topic — or
+// searches for a topic directly. The last step is a sheet with what the
+// topic covers, language and voice, and Start: the session opens and
+// GuruAI begins teaching that topic at once.
+//
+// Where the learner is lives in the URL (see router.ts PickerState), so
+// Back goes up one level and every step can be linked to.
 // ============================================================
 
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
+import { findCategory, findTopic, useCatalog } from '../catalog.ts';
 import { Icon } from '../components/Icon.tsx';
-import { VoicePicker } from '../components/VoicePicker.tsx';
+import { Link } from '../components/Link.tsx';
+import { Landing, OpenAreas, SubjectView, TrackView } from '../components/picker/Browse.tsx';
+import { AreaSheet, TopicSheet, type StartChoice } from '../components/picker/StartSheet.tsx';
 import { useLibrary } from '../library.ts';
-import { navigate, type FreshSessionState } from '../router.ts';
-import { BOARD_OPTIONS, GRADE_OPTIONS, LANGUAGE_OPTIONS, type Board, type LanguageId, type Preferences } from '../protocol.ts';
+import type { Catalog, Preferences } from '../protocol.ts';
+import { navigate, pickerHref, type FreshSessionState, type PickerState } from '../router.ts';
 import { loadPrefs, savePrefs } from '../settings.ts';
 
-export function NewSessionPage({ groupId: initialGroup }: { groupId: string | null }) {
+export function NewSessionPage({ groupId, picker }: { groupId: string | null; picker: PickerState }) {
+  const state = useCatalog();
+  if (state.status === 'loading') return <div className="page-loading">Loading the syllabus…</div>;
+  if (state.status === 'error') {
+    return (
+      <div className="page page--narrow">
+        <p className="banner" role="alert">
+          Could not load the syllabus ({state.message}). Is the GuruAI server running?
+        </p>
+      </div>
+    );
+  }
+  return <Picker catalog={state.catalog} groupId={groupId} picker={picker} />;
+}
+
+function Picker({ catalog, groupId: initialGroup, picker }: { catalog: Catalog; groupId: string | null; picker: PickerState }) {
   const lib = useLibrary();
   const [prefs, setPrefs] = useState<Preferences>(loadPrefs);
   const [groupId, setGroupId] = useState<string | null>(initialGroup);
 
-  // A remembered voice only counts if the server still offers it.
+  // A remembered voice / group only counts if it still exists.
   const voice = prefs.voice && lib.voices.some((v) => v.id === prefs.voice) ? prefs.voice : lib.defaultVoice ?? undefined;
   const group = groupId && lib.groups.some((g) => g.id === groupId) ? groupId : null;
 
-  const start = (e: FormEvent) => {
-    e.preventDefault();
-    const chosen: Preferences = { ...prefs, voice };
+  const start = ({ prefs: chosen, groupId: g }: StartChoice) => {
     savePrefs(chosen);
-    const state: FreshSessionState = { fresh: true, prefs: chosen, groupId: group };
-    navigate(`/s/${crypto.randomUUID()}`, state);
+    const s: FreshSessionState = { fresh: true, prefs: chosen, groupId: g };
+    navigate(`/s/${crypto.randomUUID()}`, s);
+  };
+  const quickStart = () => start({ prefs: { ...prefs, voice, study: undefined }, groupId: group });
+
+  // Resolve the URL against the catalog; unknown ids simply fall back a level.
+  const isOpen = picker.track === 'open';
+  const track = catalog.tracks.find((t) => t.id === picker.track) ?? null;
+  const program = track
+    ? track.programs.find((p) => p.id === picker.program) ?? (track.programs.length === 1 ? track.programs[0] : null)
+    : null;
+  const subject = program?.subjects.find((s) => s.id === picker.subject) ?? null;
+  const topic = findTopic(catalog, picker.topic);
+  const area = isOpen ? findCategory(catalog, picker.area) : null;
+
+  // Closing a sheet goes Back when the sheet was opened in-app, else just drops it from the URL.
+  const closeSheet = () => {
+    if ((window.history.state as { sheet?: boolean } | null)?.sheet) window.history.back();
+    else navigate(pickerHref({ ...picker, topic: null, area: null }, initialGroup), null, { replace: true, keepScroll: true });
   };
 
+  const crumbs: Array<{ label: string; href: string }> = [{ label: 'Start', href: pickerHref({}, initialGroup) }];
+  if (isOpen) crumbs.push({ label: 'Open chat', href: pickerHref({ track: 'open' }, initialGroup) });
+  if (track) crumbs.push({ label: track.title, href: pickerHref({ track: track.id }, initialGroup) });
+  if (track && program && track.programs.length > 1) {
+    crumbs.push({ label: program.title, href: pickerHref({ track: track.id, program: program.id }, initialGroup) });
+  }
+  if (track && program && subject) {
+    crumbs.push({ label: subject.title, href: pickerHref({ track: track.id, program: program.id, subject: subject.id }, initialGroup) });
+  }
+
+  let body;
+  if (isOpen) body = <OpenAreas categories={catalog.open_categories} picker={picker} groupId={initialGroup} />;
+  else if (track && program && subject) body = <SubjectView program={program} subject={subject} picker={picker} groupId={initialGroup} />;
+  else if (track) body = <TrackView track={track} program={program} picker={picker} groupId={initialGroup} />;
+  else body = <Landing catalog={catalog} groupId={initialGroup} onQuickStart={quickStart} />;
+
+  const sheetProps = { prefs, onPrefs: setPrefs, voice, groupId: group, onGroup: setGroupId, onClose: closeSheet, onStart: start };
+
   return (
-    <div className="page page--narrow">
-      <header className="page__head">
-        <h1>New session</h1>
-        <p className="page__lede">Choose how GuruAI should talk to you. You can change the voice later; the language stays with the session.</p>
-      </header>
-
-      <form className="form" onSubmit={start}>
-        <div className="field">
-          <label className="field__label" htmlFor="language">
-            Language
-          </label>
-          <select
-            id="language"
-            className="select"
-            value={prefs.language}
-            onChange={(e) => setPrefs((p) => ({ ...p, language: e.target.value as LanguageId }))}
-          >
-            {LANGUAGE_OPTIONS.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.nativeLabel === l.label ? l.label : `${l.nativeLabel} — ${l.label}`}
-              </option>
+    <div className="page picker">
+      {crumbs.length > 1 && (
+        <nav className="crumbs" aria-label="Where you are">
+          <Link href={crumbs[crumbs.length - 2].href} className="icon-btn crumbs__back" aria-label="Back one level">
+            <Icon name="back" />
+          </Link>
+          <ol>
+            {crumbs.map((c, i) => (
+              <li key={c.href}>
+                {i === crumbs.length - 1 ? <span aria-current="page">{c.label}</span> : <Link href={c.href}>{c.label}</Link>}
+              </li>
             ))}
-          </select>
-          <p className="field__hint">GuruAI listens and explains in this language. Hinglish mixes Hindi and English freely.</p>
-        </div>
+          </ol>
+        </nav>
+      )}
 
-        <div className="field-row">
-          <div className="field">
-            <label className="field__label" htmlFor="grade">
-              Class <span className="field__optional">optional</span>
-            </label>
-            <select
-              id="grade"
-              className="select"
-              value={prefs.grade ?? ''}
-              onChange={(e) => setPrefs((p) => ({ ...p, grade: e.target.value || undefined }))}
-            >
-              <option value="">Not set</option>
-              {GRADE_OPTIONS.map((g) => (
-                <option key={g.value} value={g.value}>
-                  {g.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label className="field__label" htmlFor="board">
-              Board <span className="field__optional">optional</span>
-            </label>
-            <select
-              id="board"
-              className="select"
-              value={prefs.board ?? ''}
-              onChange={(e) => setPrefs((p) => ({ ...p, board: (e.target.value || undefined) as Board | undefined }))}
-            >
-              <option value="">Not set</option>
-              {BOARD_OPTIONS.map((b) => (
-                <option key={b.value} value={b.value}>
-                  {b.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+      {body}
 
-        <div className="field">
-          <span className="field__label" id="voice-label">
-            Teacher&rsquo;s voice
-          </span>
-          <p className="field__hint">Click a voice to hear it speak in the language you chose.</p>
-          <VoicePicker
-            voices={lib.voices}
-            value={voice}
-            language={prefs.language}
-            onChange={(v) => setPrefs((p) => ({ ...p, voice: v }))}
-          />
-        </div>
-
-        {lib.groups.length > 0 && (
-          <div className="field">
-            <label className="field__label" htmlFor="group">
-              Save in group <span className="field__optional">optional</span>
-            </label>
-            <select id="group" className="select" value={group ?? ''} onChange={(e) => setGroupId(e.target.value || null)}>
-              <option value="">No group</option>
-              {lib.groups.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        <div className="form__actions">
-          <button className="btn btn--primary btn--large" type="submit">
-            Start session
-            <Icon name="arrowRight" />
-          </button>
-          <p className="field__hint">Your browser will ask to use the microphone. You can also just type.</p>
-        </div>
-      </form>
+      {topic && !isOpen && <TopicSheet key={topic.topic.id} place={topic} {...sheetProps} />}
+      {area && <AreaSheet key={area.id} category={area} {...sheetProps} />}
     </div>
   );
 }

@@ -18,6 +18,7 @@ import { setActiveSentenceBuffer } from './sharedState';
 import { sanitizeForTTS } from './ttsUtils';
 import { SessionStore, refreshContext } from './session';
 import { openerInstruction } from './prompts/teacher';
+import { resolveStudy } from './catalog';
 import { loadProfile } from './memory/learnerProfile';
 import { loadSessionMemory } from './memory/sessionMemory';
 import { loadNotes } from './notes/notesAgent';
@@ -337,7 +338,7 @@ function triggerLLMStream(ctx: SessionContext): void {
     ctx.openerActive = true;
     ctx.conversationHistory.push({
       role: 'user',
-      content: openerInstruction(kind, loadProfile(), loadSessionMemory(ctx.sessionId).memory, loadNotes(ctx.sessionId).enabled),
+      content: openerInstruction(kind, loadProfile(), loadSessionMemory(ctx.sessionId).memory, loadNotes(ctx.sessionId).enabled, resolveStudy(ctx.preferences.study)),
       ephemeral: true,
     });
   }

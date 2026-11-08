@@ -55,12 +55,72 @@ export const BOARD_OPTIONS: Array<{ value: Board; label: string }> = [
   { value: 'OTHER', label: 'Other' },
 ];
 
+/** What a session is about: a syllabus topic, or an open-chat area (mirrors src/types.ts). */
+export type StudyChoice =
+  | { kind: 'topic'; topicId: string }
+  | { kind: 'open'; categoryId: string; ask?: string };
+
 export interface Preferences {
   language: LanguageId;
   /** Timbre voice id (see GET /api/voices). */
   voice?: string;
   grade?: string;
   board?: Board;
+  study?: StudyChoice;
+}
+
+// ── The built-in syllabus (GET /api/catalog, see src/catalog) ──
+
+export interface CatalogTopic {
+  id: string;
+  title: string;
+  summary: string;
+  chunks: string[];
+  keyTerms: string[];
+}
+
+export interface CatalogUnit {
+  id: string;
+  title: string;
+  topics: CatalogTopic[];
+}
+
+export interface CatalogSubject {
+  id: string;
+  title: string;
+  icon: string;
+  units: CatalogUnit[];
+}
+
+export interface CatalogProgram {
+  id: string;
+  title: string;
+  note: string;
+  level: { grade?: string; board?: Board };
+  subjects: CatalogSubject[];
+}
+
+export type TrackId = 'school' | 'college' | 'exam';
+
+export interface CatalogTrack {
+  id: TrackId;
+  title: string;
+  blurb: string;
+  icon: string;
+  programs: CatalogProgram[];
+}
+
+export interface OpenCategory {
+  id: string;
+  title: string;
+  icon: string;
+  blurb: string;
+  starters: string[];
+}
+
+export interface Catalog {
+  tracks: CatalogTrack[];
+  open_categories: OpenCategory[];
 }
 
 /** One Timbre voice, as listed by GET /api/voices. */
@@ -86,6 +146,8 @@ export interface SessionSummary {
   updated_ts: number;
   turn_count: number;
   last_text: string | null;
+  /** What the session studies, labelled by the server (null for a plain session). */
+  study: { kind: 'topic' | 'open'; ref: string | null; title: string; subtitle: string } | null;
 }
 
 /** One small idea of a lesson, as tracked by the session memory. */
